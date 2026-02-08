@@ -1,3 +1,5 @@
+"""Shared UI constants and delegates for the Maya file search interface."""
+
 from typing import Callable, Iterable, List, Optional
 
 try:
@@ -42,6 +44,8 @@ QTreeView::item:focus {
 
 
 class RowHeightDelegate(QtWidgets.QStyledItemDelegate):
+    """Tree item delegate with fixed row height and token highlight rendering."""
+
     def __init__(
         self,
         row_height: int,
@@ -55,6 +59,7 @@ class RowHeightDelegate(QtWidgets.QStyledItemDelegate):
         self._highlight_color = QtGui.QColor(highlight_color)
 
     def sizeHint(self, option, index):
+        """Ensure a minimum row height for denser tree readability."""
         hint = super().sizeHint(option, index)
         if hint.height() < self._row_height:
             hint.setHeight(self._row_height)
@@ -62,6 +67,7 @@ class RowHeightDelegate(QtWidgets.QStyledItemDelegate):
 
     @staticmethod
     def _highlight_ranges(text: str, tokens: List[str]):
+        """Return merged match ranges for all tokens in text."""
         text_lower = str(text).lower()
         ranges = []
         for token in sorted({t.lower() for t in tokens if t}, key=len, reverse=True):
@@ -84,6 +90,7 @@ class RowHeightDelegate(QtWidgets.QStyledItemDelegate):
         return [(s, e) for s, e in merged]
 
     def paint(self, painter, option, index):
+        """Draw item text with highlighted token substrings."""
         if self._tokens_getter is None or index.column() != 0:
             return super().paint(painter, option, index)
 
@@ -101,6 +108,7 @@ class RowHeightDelegate(QtWidgets.QStyledItemDelegate):
         style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
         text_rect = style.subElementRect(QtWidgets.QStyle.SE_ItemViewItemText, opt, opt.widget)
 
+        # Let Qt paint the item background/selection, then draw styled text manually.
         draw_opt = QtWidgets.QStyleOptionViewItem(opt)
         draw_opt.text = ""
         style.drawControl(QtWidgets.QStyle.CE_ItemViewItem, draw_opt, painter, draw_opt.widget)

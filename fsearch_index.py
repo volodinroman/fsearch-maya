@@ -1,3 +1,5 @@
+"""SQLite/FTS index repository used by FileSearcher."""
+
 import os
 import re
 import sqlite3
@@ -8,6 +10,8 @@ from typing import Dict, Iterable, List, Optional
 
 
 class FileIndexRepository:
+    """Owns DB connection, schema management, indexing, and search queries."""
+
     def __init__(self, db_path: Path):
         self._db_path = Path(db_path)
         self._db_lock = threading.Lock()
@@ -19,6 +23,7 @@ class FileIndexRepository:
         return self._db_path
 
     def set_db_path(self, db_path: Path) -> None:
+        """Switch to a different DB file, recreating the connection if needed."""
         target = Path(db_path)
         if target == self._db_path and self._conn is not None:
             return
@@ -27,6 +32,7 @@ class FileIndexRepository:
         self._connect()
 
     def _connect(self) -> None:
+        """Open sqlite connection and ensure schema exists."""
         with self._db_lock:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
@@ -35,6 +41,7 @@ class FileIndexRepository:
             self._init_schema()
 
     def _init_schema(self) -> None:
+        """Create tables, indexes, FTS table, and synchronization triggers."""
         cur = self._conn.cursor()
         cur.execute("PRAGMA journal_mode=WAL;")
         cur.execute("PRAGMA synchronous=NORMAL;")
@@ -117,6 +124,7 @@ class FileIndexRepository:
 
     @property
     def is_indexed(self) -> bool:
+        """Return True if the files table contains at least one row."""
         if self._conn is None:
             return False
         with self._db_lock:
@@ -134,6 +142,7 @@ class FileIndexRepository:
         callback=None,
         logger=None,
     ) -> None:
+        """Rebuild file index from roots using configured filters."""
         start = time.time()
         if show_progress and logger:
             logger("Starting index rebuild...")
@@ -183,6 +192,7 @@ class FileIndexRepository:
             callback(f"Done. {count} items in {duration:.2f}s.")
 
     def _iter_files(self, roots: Iterable[str], extensions: List[str], include_folders: bool, logger):
+        """Yield rows prepared for bulk insert into files table."""
         extension_set = set(extensions)
         for root in roots:
             root_path = Path(root).expanduser()
@@ -223,14 +233,17 @@ class FileIndexRepository:
 
     @staticmethod
     def _tokens_from_text(text: str) -> List[str]:
+        """Split search text into lower-cased space-separated tokens."""
         return [token.strip().lower() for token in text.split() if token.strip()]
 
     @staticmethod
     def _build_fts_match_query(tokens: List[str]) -> str:
+        """Build safe FTS MATCH query where all tokens are required."""
         safe_tokens = [f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens]
         return " AND ".join(safe_tokens)
 
     def search(self, query: str, max_results: int) -> List[Dict]:
+        """Run hybrid search: FTS first, then LIKE fallback for coverage."""
         tokens = self._tokens_from_text(query)
         if not tokens:
             return []
@@ -293,6 +306,7 @@ class FileIndexRepository:
         return collected[:max_results]
 
     def regex_search(self, pattern: str, max_results: int) -> List[Dict]:
+        """Run REGEXP search against path and filename columns."""
         try:
             re.compile(pattern)
         except re.error as exc:
@@ -314,6 +328,7 @@ class FileIndexRepository:
         return [dict(r) for r in rows]
 
     def get_stats(self) -> Dict:
+        """Return index statistics for UI diagnostics."""
         if self._conn is None:
             return {}
         with self._db_lock:
@@ -336,6 +351,7 @@ class FileIndexRepository:
         }
 
     def close(self) -> None:
+        """Close DB connection safely."""
         if self._conn is not None:
             with self._db_lock:
                 self._conn.close()

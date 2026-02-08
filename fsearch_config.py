@@ -1,3 +1,5 @@
+"""Configuration storage utilities for the Maya file search tool."""
+
 import json
 from pathlib import Path
 from typing import Dict, Optional
@@ -23,12 +25,15 @@ DEFAULT_CONFIG: Dict = {
 
 
 class SearchConfigStore:
+    """Loads, saves, and updates the JSON configuration file."""
+
     def __init__(self, project_dir: Path, config_path: Optional[str] = None):
         self.project_dir = Path(project_dir)
         self.data_dir = self.project_dir / ".data"
         self.config_path = Path(config_path) if config_path else self.data_dir / "config.json"
 
     def load(self) -> Dict:
+        """Load normalized config merged with defaults."""
         if not self.config_path.exists():
             cfg = dict(DEFAULT_CONFIG)
             self.save(cfg)
@@ -48,6 +53,7 @@ class SearchConfigStore:
         return cfg
 
     def load_raw(self) -> Dict:
+        """Load raw config as-is from disk without merging defaults."""
         if not self.config_path.exists():
             return {}
         try:
@@ -59,10 +65,12 @@ class SearchConfigStore:
         return {}
 
     def save(self, config: Dict) -> None:
+        """Persist config to disk with stable formatting."""
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         self.config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
     def update_fields(self, updates: Dict) -> Dict:
+        """Merge updates into current config and save."""
         cfg = self.load()
         raw = self.load_raw()
         cfg.update(raw)
@@ -71,6 +79,7 @@ class SearchConfigStore:
         return cfg
 
     def resolve_db_path(self, config: Dict) -> Path:
+        """Resolve DB path from config to an absolute path under .data by default."""
         db_name = str(config.get("db_path", "maya_project_index.db"))
         db_path = Path(db_name)
         if db_path.is_absolute():

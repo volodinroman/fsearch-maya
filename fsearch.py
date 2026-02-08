@@ -1,3 +1,5 @@
+"""Public search facade combining config store, index repository, and Maya logging."""
+
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -11,6 +13,8 @@ except Exception:
 
 
 class FileSearcher:
+    """Singleton facade used by UI and scripts."""
+
     _instance = None
 
     def __new__(cls, *args, **kwargs):
@@ -32,6 +36,7 @@ class FileSearcher:
         self._initialized = True
 
     def _log(self, message: str, level: str = "info") -> None:
+        """Route logs to Maya Script Editor when available."""
         if OpenMaya is not None:
             if level == "error":
                 OpenMaya.MGlobal.displayError(f"[FileSearcher] {message}")
@@ -43,6 +48,7 @@ class FileSearcher:
         print(f"[{level.upper()}] [FileSearcher] {message}")
 
     def refresh_config(self) -> None:
+        """Reload config and retarget the repository DB path if changed."""
         self.config = self._config_store.load()
         db_path = self._config_store.resolve_db_path(self.config)
         self._index.set_db_path(db_path)
@@ -52,6 +58,7 @@ class FileSearcher:
         return self._index.is_indexed
 
     def _normalized_extensions(self) -> List[str]:
+        """Normalize configured file extensions to '.ext' lower-case format."""
         exts = self.config.get("file_extensions", [])
         normalized = []
         for ext in exts:
@@ -64,6 +71,7 @@ class FileSearcher:
         return normalized
 
     def rebuild_index(self, show_progress: bool = True, callback=None) -> None:
+        """Rebuild index from current config."""
         roots = self.config.get("roots", [])
         extensions = self._normalized_extensions()
         include_folders = bool(self.config.get("include_folders", False))
@@ -77,15 +85,19 @@ class FileSearcher:
         )
 
     def search(self, query: str, limit: Optional[int] = None) -> List[Dict]:
+        """Run hybrid search query."""
         max_results = int(limit or self.config.get("max_results", 200))
         return self._index.search(query=query, max_results=max_results)
 
     def regex_search(self, pattern: str, limit: Optional[int] = None) -> List[Dict]:
+        """Run regex search query."""
         max_results = int(limit or self.config.get("max_results", 200))
         return self._index.regex_search(pattern=pattern, max_results=max_results)
 
     def get_stats(self) -> Dict:
+        """Return index statistics."""
         return self._index.get_stats()
 
     def close(self) -> None:
+        """Release repository resources."""
         self._index.close()

@@ -1,3 +1,5 @@
+"""Maya Qt dialog for searching indexed files and managing bookmarks."""
+
 import json
 import os
 import subprocess
@@ -34,18 +36,21 @@ except Exception:
     QT_API = "PySide2"
 
 def _menu_exec(menu, pos):
+    """Qt5/Qt6-compatible context menu execution."""
     if hasattr(menu, "exec"):
         return menu.exec(pos)
     return menu.exec_(pos)
 
 
 def _app_exec(app):
+    """Qt5/Qt6-compatible application loop execution."""
     if hasattr(app, "exec"):
         return app.exec()
     return app.exec_()
 
 
 def maya_main_window():
+    """Return Maya main window wrapped as QWidget parent."""
     ptr = omui.MQtUtil.mainWindow()
     if ptr is None:
         return None
@@ -53,6 +58,8 @@ def maya_main_window():
 
 
 class FileSearcherUI(QtWidgets.QDialog):
+    """Main dialog: search results, bookmarks, and settings tabs."""
+
     def __init__(self, parent=None):
         super().__init__(parent or maya_main_window())
         self.setObjectName(WINDOW_OBJECT_NAME)
@@ -84,6 +91,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._refresh_stats()
 
     def _load_custom_font(self, font_size):
+        """Load bundled custom font at requested size."""
         font_path = _THIS_DIR / "assets" / "JetBrainsMono-Regular.ttf"
         if not font_path.exists():
             return None
@@ -96,6 +104,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         return QtGui.QFont(families[0], int(font_size))
 
     def _apply_font_settings(self, use_custom_font, font_size):
+        """Apply either bundled font or default UI font."""
         if use_custom_font:
             custom_font = self._load_custom_font(font_size)
             if custom_font is not None:
@@ -114,6 +123,7 @@ class FileSearcherUI(QtWidgets.QDialog):
             self.bookmarks_tree.header().setFont(self._ui_font)
 
     def _build_ui(self):
+        """Build the tab container and tab contents."""
         root = QtWidgets.QVBoxLayout(self)
         self.tabs = QtWidgets.QTabWidget()
         root.addWidget(self.tabs)
@@ -130,6 +140,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._build_settings_tab()
 
     def _build_search_tab(self):
+        """Create search input, options, results tree, and status line."""
         layout = QtWidgets.QVBoxLayout(self.search_tab)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
@@ -160,6 +171,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         layout.addWidget(self.search_status)
 
     def _build_bookmarks_tab(self):
+        """Create bookmarks list, actions, and status line."""
         layout = QtWidgets.QVBoxLayout(self.bookmarks_tab)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
@@ -185,6 +197,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         layout.addWidget(self.bookmarks_status)
 
     def _build_settings_tab(self):
+        """Create settings controls for indexing, search, and UI preferences."""
         layout = QtWidgets.QVBoxLayout(self.settings_tab)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
@@ -248,6 +261,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         layout.addWidget(self.settings_status)
 
     def _connect_signals(self):
+        """Wire Qt signals to handlers."""
         self.search_edit.textChanged.connect(self._schedule_search)
         self.results_tree.customContextMenuRequested.connect(self._open_context_menu)
         self.results_tree.itemDoubleClicked.connect(self._on_item_double_click)
@@ -269,6 +283,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.delete_bookmarks_shortcut.activated.connect(self._remove_selected_bookmarks)
 
     def _load_settings(self):
+        """Load settings from config and apply them to widgets."""
         self._is_loading_settings = True
         try:
             self.searcher.refresh_config()
@@ -309,9 +324,11 @@ class FileSearcherUI(QtWidgets.QDialog):
             self._is_loading_settings = False
 
     def _refresh_stats(self):
+        """Set default status text for search panel."""
         self.search_status.setText("Type to search.")
 
     def _schedule_search(self):
+        """Run search immediately or through debounce timer."""
         if not self.use_search_debounce_check.isChecked():
             self._run_search()
             return
@@ -319,6 +336,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._search_debounce_timer.start()
 
     def _run_search(self):
+        """Execute search and update results tree and metrics."""
         query = self.search_edit.text().strip()
         self._persist_last_search_query(query)
         self._current_search_tokens = self._tokens_from_query(query)
@@ -354,6 +372,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         )
 
     def _populate_tree(self, results):
+        """Render grouped search results into a folder/file tree."""
         self.results_tree.clear()
         grouped = {}
         folder_only = set()
@@ -387,6 +406,7 @@ class FileSearcherUI(QtWidgets.QDialog):
                 folder_item.setExpanded(True)
 
     def _tokens_from_query(self, text):
+        """Tokenize user search query by spaces."""
         tokens = []
         for token in str(text).split():
             token = token.strip().lower()
@@ -395,6 +415,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         return tokens
 
     def _normalize_bookmarks(self, raw_bookmarks):
+        """Normalize bookmarks and deduplicate by type/path."""
         normalized_bookmarks = []
         seen = set()
         for raw in raw_bookmarks if isinstance(raw_bookmarks, list) else []:
@@ -419,6 +440,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         return normalized_bookmarks
 
     def _populate_bookmarks(self):
+        """Render bookmarks list from in-memory collection."""
         self.bookmarks_tree.clear()
         for bookmark in self._bookmarks:
             path = bookmark.get("path")
@@ -435,6 +457,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         return Path(str(path)).suffix.lower() in MAYA_EXTENSIONS
 
     def _add_bookmark(self, path, item_type):
+        """Add new bookmark entry unless it already exists."""
         normalized_path = str(path).replace("\\", "/")
         key = (item_type, normalized_path.lower())
         existing = {(b.get("type"), str(b.get("path", "")).lower()) for b in self._bookmarks}
@@ -457,6 +480,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._persist_bookmarks()
 
     def _remove_selected_bookmarks(self):
+        """Remove all currently selected bookmark rows."""
         selected = self.bookmarks_tree.selectedItems()
         if not selected:
             return
@@ -479,6 +503,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._persist_bookmarks()
 
     def _delete_all_bookmarks(self):
+        """Remove all bookmarks."""
         if not self._bookmarks:
             return
         self._bookmarks = []
@@ -486,6 +511,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._persist_bookmarks()
 
     def _open_context_menu(self, pos):
+        """Open context menu for search results tree items."""
         item = self.results_tree.itemAt(pos)
         if item is None:
             return
@@ -525,12 +551,14 @@ class FileSearcherUI(QtWidgets.QDialog):
                 self._add_bookmark(item_path, ITEM_FILE)
 
     def _open_bookmarks_context_menu(self, pos):
+        """Open context menu for single or multi-selected bookmarks."""
         item = self.bookmarks_tree.itemAt(pos)
         if item is None:
             return
 
         selected_items = self.bookmarks_tree.selectedItems()
         if item not in selected_items:
+            # Match common explorer behavior: right-click selects the clicked row.
             self.bookmarks_tree.clearSelection()
             item.setSelected(True)
             self.bookmarks_tree.setCurrentItem(item)
@@ -599,6 +627,7 @@ class FileSearcherUI(QtWidgets.QDialog):
             self.roots_list.takeItem(self.roots_list.row(item))
 
     def _collect_settings(self):
+        """Collect current settings into a config payload."""
         roots = [self.roots_list.item(i).text().strip() for i in range(self.roots_list.count())]
         roots = [r for r in roots if r]
         exts = [e.strip() for e in self.extensions_edit.text().split(",") if e.strip()]
@@ -622,6 +651,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         return cfg
 
     def _on_remember_last_search_changed(self, *_args):
+        """Persist remember-last-search toggle and value changes."""
         if self._is_loading_settings:
             return
         if self.remember_last_search_check.isChecked():
@@ -635,18 +665,21 @@ class FileSearcherUI(QtWidgets.QDialog):
             self._update_config_fields({"remember_last_search": False, "last_search_query": ""})
 
     def _on_debounce_settings_changed(self, *_args):
+        """Apply debounce controls and persist them."""
         self.search_debounce_ms_spin.setEnabled(self.use_search_debounce_check.isChecked())
         self._search_debounce_timer.setInterval(max(0, int(self.search_debounce_ms_spin.value())))
         if not self._is_loading_settings:
             self._save_settings(silent=True)
 
     def _on_font_settings_changed(self, *_args):
+        """Apply font controls and persist them."""
         self.font_size_spin.setEnabled(self.use_custom_font_check.isChecked())
         self._apply_font_settings(self.use_custom_font_check.isChecked(), self.font_size_spin.value())
         if not self._is_loading_settings:
             self._save_settings(silent=True)
 
     def _run_auto_rebuild_on_launch_if_enabled(self):
+        """Rebuild index at launch when enabled in settings."""
         enabled = bool(self.searcher.config.get("auto_rebuild_on_launch", self.searcher.config.get("index_on_import", False)))
         if not enabled:
             return
@@ -659,16 +692,19 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.settings_status.setText("Auto-rebuild completed.")
 
     def _save_settings(self, silent=False):
+        """Save full settings payload to config."""
         cfg = self._collect_settings()
         self._update_config_fields(cfg)
         if not silent:
             self.settings_status.setText(f"Saved: {self._config_path}")
 
     def _persist_bookmarks(self):
+        """Persist bookmarks only, preserving other config fields."""
         cfg = {"bookmarks": self._bookmarks}
         self._update_config_fields(cfg)
 
     def _load_config_json(self):
+        """Load raw config file contents for merge-safe updates."""
         if self._config_path.exists():
             try:
                 raw = json.loads(self._config_path.read_text(encoding="utf-8"))
@@ -679,8 +715,10 @@ class FileSearcherUI(QtWidgets.QDialog):
         return {}
 
     def _update_config_fields(self, updates):
+        """Merge field updates with current + raw config and save."""
         cfg = dict(self.searcher.config) if isinstance(self.searcher.config, dict) else {}
         file_cfg = self._load_config_json()
+        # Merge disk file too, so externally added keys are preserved.
         cfg.update(file_cfg)
         cfg.update(updates)
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -688,6 +726,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.searcher.refresh_config()
 
     def _persist_last_search_query(self, query):
+        """Persist latest search text when feature is enabled."""
         if self._is_loading_settings:
             return
         if not self.remember_last_search_check.isChecked():
@@ -698,6 +737,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._update_config_fields({"last_search_query": query})
 
     def _persist_window_size(self):
+        """Persist window size if it has changed."""
         if self._is_loading_settings:
             return
         size_payload = {"window_size": {"width": int(self.width()), "height": int(self.height())}}
@@ -711,11 +751,13 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._update_config_fields(size_payload)
 
     def resizeEvent(self, event):
+        """Throttle config writes while user is resizing the window."""
         super().resizeEvent(event)
         if not self._is_loading_settings:
             self._window_state_timer.start()
 
     def _rebuild_index(self):
+        """Save settings, rebuild index, and refresh current search."""
         self._save_settings()
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
@@ -727,6 +769,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._run_search()
 
     def _open_in_maya(self, file_path):
+        """Open Maya scene file (.ma/.mb) using Maya file command."""
         file_path = os.path.normpath(file_path)
         if not self._is_maya_file(file_path):
             return
@@ -736,6 +779,7 @@ class FileSearcherUI(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "Open File", f"Failed to open in Maya:\n{exc}")
 
     def _open_folder(self, folder_path):
+        """Open folder in OS file explorer."""
         folder_path = os.path.normpath(folder_path)
         try:
             os.startfile(folder_path)  # type: ignore[attr-defined]
@@ -743,6 +787,7 @@ class FileSearcherUI(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "Open Folder", f"Failed to open folder:\n{exc}")
 
     def _reveal_in_explorer(self, path, is_file):
+        """Reveal file or open folder in explorer."""
         path = os.path.normpath(path)
         try:
             if is_file:
@@ -754,6 +799,7 @@ class FileSearcherUI(QtWidgets.QDialog):
 
 
 def show_file_searcher_ui():
+    """Create a fresh UI instance, replacing existing one by object name."""
     try:
         if cmds.window(WINDOW_OBJECT_NAME, exists=True):
             cmds.deleteUI(WINDOW_OBJECT_NAME, window=True)
