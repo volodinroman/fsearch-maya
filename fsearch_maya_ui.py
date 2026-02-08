@@ -39,6 +39,7 @@ ROLE_TYPE = QtCore.Qt.UserRole + 1
 ROLE_PATH = QtCore.Qt.UserRole + 2
 ITEM_FOLDER = "folder"
 ITEM_FILE = "file"
+MAYA_EXTENSIONS = {".ma", ".mb"}
 
 
 def _menu_exec(menu, pos):
@@ -70,10 +71,12 @@ class FileSearcherUI(QtWidgets.QDialog):
 
         self.searcher = FileSearcher()
         self._config_path = Path(self.searcher._config_path)
+        self._bookmarks = []
 
         self._build_ui()
         self._connect_signals()
         self._load_settings()
+        self._run_auto_rebuild_on_launch_if_enabled()
         self._refresh_stats()
 
     def _build_ui(self):
@@ -106,11 +109,14 @@ class FileSearcherUI(QtWidgets.QDialog):
         root.addWidget(self.tabs)
 
         self.search_tab = QtWidgets.QWidget()
+        self.bookmarks_tab = QtWidgets.QWidget()
         self.settings_tab = QtWidgets.QWidget()
         self.tabs.addTab(self.search_tab, "Search")
+        self.tabs.addTab(self.bookmarks_tab, "Bookmarks")
         self.tabs.addTab(self.settings_tab, "Settings")
 
         self._build_search_tab()
+        self._build_bookmarks_tab()
         self._build_settings_tab()
 
     def _build_search_tab(self):
@@ -141,6 +147,22 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.search_status.setObjectName("Caption")
         layout.addWidget(self.search_status)
 
+    def _build_bookmarks_tab(self):
+        layout = QtWidgets.QVBoxLayout(self.bookmarks_tab)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        self.bookmarks_tree = QtWidgets.QTreeWidget()
+        self.bookmarks_tree.setHeaderLabel("Path")
+        self.bookmarks_tree.setAlternatingRowColors(True)
+        self.bookmarks_tree.setRootIsDecorated(False)
+        self.bookmarks_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        layout.addWidget(self.bookmarks_tree, 1)
+
+        self.bookmarks_status = QtWidgets.QLabel("Bookmarks: 0")
+        self.bookmarks_status.setObjectName("Caption")
+        layout.addWidget(self.bookmarks_status)
+
     def _build_settings_tab(self):
         layout = QtWidgets.QVBoxLayout(self.settings_tab)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -165,7 +187,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.extensions_edit = QtWidgets.QLineEdit()
         self.extensions_edit.setPlaceholderText(".ma, .mb, .abc")
         self.include_folders_check = QtWidgets.QCheckBox("Include folders in index")
-        self.index_on_import_check = QtWidgets.QCheckBox("Index on import")
+        self.auto_rebuild_on_launch_check = QtWidgets.QCheckBox("Auto-rebuilding on launch")
         self.max_results_spin = QtWidgets.QSpinBox()
         self.max_results_spin.setRange(1, 5000)
         self.db_path_edit = QtWidgets.QLineEdit()
@@ -174,7 +196,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         form.addRow("Max results", self.max_results_spin)
         form.addRow("DB path", self.db_path_edit)
         form.addRow("", self.include_folders_check)
-        form.addRow("", self.index_on_import_check)
+        form.addRow("", self.auto_rebuild_on_launch_check)
         layout.addLayout(form)
 
         btn_row = QtWidgets.QHBoxLayout()
@@ -193,6 +215,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.search_edit.textChanged.connect(self._run_search)
         self.results_tree.customContextMenuRequested.connect(self._open_context_menu)
         self.results_tree.itemDoubleClicked.connect(self._on_item_double_click)
+        self.bookmarks_tree.customContextMenuRequested.connect(self._open_bookmarks_context_menu)
 
         self.add_root_btn.clicked.connect(self._add_root)
         self.remove_root_btn.clicked.connect(self._remove_selected_roots)
@@ -209,14 +232,16 @@ class FileSearcherUI(QtWidgets.QDialog):
 
         self.extensions_edit.setText(", ".join(cfg.get("file_extensions", [])))
         self.include_folders_check.setChecked(bool(cfg.get("include_folders", False)))
-        self.index_on_import_check.setChecked(bool(cfg.get("index_on_import", False)))
+        self.auto_rebuild_on_launch_check.setChecked(
+            bool(cfg.get("auto_rebuild_on_launch", cfg.get("index_on_import", False)))
+        )
         self.max_results_spin.setValue(int(cfg.get("max_results", 200)))
         self.db_path_edit.setText(str(cfg.get("db_path", "maya_project_index.db")))
+        self._bookmarks = self._normalize_bookmarks(cfg.get("bookmarks", []))
+        self._populate_bookmarks()
 
     def _refresh_stats(self):
-        stats = self.searcher.get_stats()
-        total = stats.get("total_items", 0)
-        self.search_status.setText(f"Indexed items: {total}")
+        self.search_status.setText("Type to search.")
 
     def _run_search(self):
         query = self.search_edit.text().strip()
@@ -241,7 +266,9 @@ class FileSearcherUI(QtWidgets.QDialog):
             return
 
         self._populate_tree(results)
-        self.search_status.setText(f"Results: {len(results)}")
+        folders_count = sum(1 for row in results if bool(row.get("is_dir", 0)))
+        files_count = len(results) - folders_count
+        self.search_status.setText(f"Found: files {files_count}, folders {folders_count}")
 
     def _populate_tree(self, results):
         self.results_tree.clear()
@@ -276,6 +303,68 @@ class FileSearcherUI(QtWidgets.QDialog):
             if children:
                 folder_item.setExpanded(True)
 
+    def _normalize_bookmarks(self, raw_bookmarks):
+        normalized_bookmarks = []
+        seen = set()
+        for raw in raw_bookmarks if isinstance(raw_bookmarks, list) else []:
+            if isinstance(raw, dict):
+                path = str(raw.get("path", "")).strip()
+                item_type = str(raw.get("type", "")).strip().lower()
+            else:
+                path = str(raw).strip()
+                item_type = ITEM_FOLDER if Path(path).suffix == "" else ITEM_FILE
+
+            if not path:
+                continue
+            if item_type not in (ITEM_FILE, ITEM_FOLDER):
+                item_type = ITEM_FOLDER if Path(path).suffix == "" else ITEM_FILE
+
+            normalized_path = path.replace("\\", "/")
+            key = (item_type, normalized_path.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized_bookmarks.append({"path": normalized_path, "type": item_type})
+        return normalized_bookmarks
+
+    def _populate_bookmarks(self):
+        self.bookmarks_tree.clear()
+        for bookmark in self._bookmarks:
+            path = bookmark.get("path")
+            item_type = bookmark.get("type")
+            if not path or item_type not in (ITEM_FILE, ITEM_FOLDER):
+                continue
+            item = QtWidgets.QTreeWidgetItem([path])
+            item.setData(0, ROLE_PATH, path)
+            item.setData(0, ROLE_TYPE, item_type)
+            self.bookmarks_tree.addTopLevelItem(item)
+        self.bookmarks_status.setText(f"Bookmarks: {len(self._bookmarks)}")
+
+    def _is_maya_file(self, path):
+        return Path(str(path)).suffix.lower() in MAYA_EXTENSIONS
+
+    def _add_bookmark(self, path, item_type):
+        normalized_path = str(path).replace("\\", "/")
+        key = (item_type, normalized_path.lower())
+        existing = {(b.get("type"), str(b.get("path", "")).lower()) for b in self._bookmarks}
+        if key in existing:
+            self.bookmarks_status.setText("Bookmark already exists.")
+            return
+        self._bookmarks.append({"path": normalized_path, "type": item_type})
+        self._populate_bookmarks()
+        self._persist_bookmarks()
+
+    def _remove_bookmark(self, path, item_type):
+        normalized_path = str(path).replace("\\", "/")
+        target = (item_type, normalized_path.lower())
+        self._bookmarks = [
+            b
+            for b in self._bookmarks
+            if (b.get("type"), str(b.get("path", "")).lower()) != target
+        ]
+        self._populate_bookmarks()
+        self._persist_bookmarks()
+
     def _open_context_menu(self, pos):
         item = self.results_tree.itemAt(pos)
         if item is None:
@@ -290,29 +379,65 @@ class FileSearcherUI(QtWidgets.QDialog):
         if item_type == ITEM_FOLDER:
             copy_action = menu.addAction("Copy Path")
             reveal_action = menu.addAction("Reveal in Explorer")
+            bookmark_action = menu.addAction("Create Bookmark")
             chosen = _menu_exec(menu, self.results_tree.viewport().mapToGlobal(pos))
             if chosen == copy_action:
                 QtWidgets.QApplication.clipboard().setText(item_path)
             elif chosen == reveal_action:
                 self._reveal_in_explorer(item_path, is_file=False)
+            elif chosen == bookmark_action:
+                self._add_bookmark(item_path, ITEM_FOLDER)
         elif item_type == ITEM_FILE:
-            open_action = menu.addAction("Open File")
+            open_action = None
+            if self._is_maya_file(item_path):
+                open_action = menu.addAction("Open File")
             copy_action = menu.addAction("Copy Path")
             reveal_action = menu.addAction("Reveal in Explorer")
             open_folder_action = menu.addAction("Open Containing Folder")
+            bookmark_action = menu.addAction("Create Bookmark")
             chosen = _menu_exec(menu, self.results_tree.viewport().mapToGlobal(pos))
-            if chosen == open_action:
-                self._open_file(item_path)
+            if open_action is not None and chosen == open_action:
+                self._open_in_maya(item_path)
             elif chosen == copy_action:
                 QtWidgets.QApplication.clipboard().setText(item_path)
             elif chosen == reveal_action:
                 self._reveal_in_explorer(item_path, is_file=True)
             elif chosen == open_folder_action:
                 self._open_folder(str(Path(item_path).parent))
+            elif chosen == bookmark_action:
+                self._add_bookmark(item_path, ITEM_FILE)
+
+    def _open_bookmarks_context_menu(self, pos):
+        item = self.bookmarks_tree.itemAt(pos)
+        if item is None:
+            return
+
+        item_type = item.data(0, ROLE_TYPE)
+        item_path = item.data(0, ROLE_PATH)
+        if not item_path or item_type not in (ITEM_FILE, ITEM_FOLDER):
+            return
+
+        menu = QtWidgets.QMenu(self)
+        reveal_action = menu.addAction("Reveal in Explorer")
+        open_maya_action = None
+        if item_type == ITEM_FILE and self._is_maya_file(item_path):
+            open_maya_action = menu.addAction("Open in Maya")
+        remove_action = menu.addAction("Remove Bookmark")
+
+        chosen = _menu_exec(menu, self.bookmarks_tree.viewport().mapToGlobal(pos))
+        if chosen == reveal_action:
+            self._reveal_in_explorer(item_path, is_file=(item_type == ITEM_FILE))
+        elif open_maya_action is not None and chosen == open_maya_action:
+            self._open_in_maya(item_path)
+        elif chosen == remove_action:
+            self._remove_bookmark(item_path, item_type)
 
     def _on_item_double_click(self, item, _column):
-        if item.data(0, ROLE_TYPE) == ITEM_FILE:
-            self._open_file(item.data(0, ROLE_PATH))
+        if item.data(0, ROLE_TYPE) != ITEM_FILE:
+            return
+        item_path = item.data(0, ROLE_PATH)
+        if self._is_maya_file(item_path):
+            self._open_in_maya(item_path)
 
     def _add_root(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Choose Root Folder")
@@ -336,10 +461,23 @@ class FileSearcherUI(QtWidgets.QDialog):
             "file_extensions": exts,
             "include_folders": self.include_folders_check.isChecked(),
             "max_results": int(self.max_results_spin.value()),
-            "index_on_import": self.index_on_import_check.isChecked(),
+            "auto_rebuild_on_launch": self.auto_rebuild_on_launch_check.isChecked(),
             "db_path": self.db_path_edit.text().strip() or "maya_project_index.db",
+            "bookmarks": self._bookmarks,
         }
         return cfg
+
+    def _run_auto_rebuild_on_launch_if_enabled(self):
+        enabled = bool(self.searcher.config.get("auto_rebuild_on_launch", self.searcher.config.get("index_on_import", False)))
+        if not enabled:
+            return
+        self.settings_status.setText("Auto-rebuilding index on launch...")
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            self.searcher.rebuild_index(show_progress=True)
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        self.settings_status.setText("Auto-rebuild completed.")
 
     def _save_settings(self):
         cfg = self._collect_settings()
@@ -347,6 +485,20 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
         self.searcher.refresh_config()
         self.settings_status.setText(f"Saved: {self._config_path}")
+
+    def _persist_bookmarks(self):
+        cfg = {}
+        if self._config_path.exists():
+            try:
+                cfg = json.loads(self._config_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                cfg = {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+        cfg["bookmarks"] = self._bookmarks
+        self._config_path.parent.mkdir(parents=True, exist_ok=True)
+        self._config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        self.searcher.refresh_config()
 
     def _rebuild_index(self):
         self._save_settings()
@@ -359,8 +511,10 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.settings_status.setText("Index rebuild completed.")
         self._run_search()
 
-    def _open_file(self, file_path):
+    def _open_in_maya(self, file_path):
         file_path = os.path.normpath(file_path)
+        if not self._is_maya_file(file_path):
+            return
         if MAYA_AVAILABLE:
             try:
                 cmds.file(file_path, open=True, force=True)
@@ -368,11 +522,7 @@ class FileSearcherUI(QtWidgets.QDialog):
             except Exception as exc:
                 QtWidgets.QMessageBox.warning(self, "Open File", f"Failed to open in Maya:\n{exc}")
                 return
-
-        try:
-            os.startfile(file_path)  # type: ignore[attr-defined]
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(self, "Open File", f"Failed to open file:\n{exc}")
+        QtWidgets.QMessageBox.warning(self, "Open in Maya", "Maya API is not available in this session.")
 
     def _open_folder(self, folder_path):
         folder_path = os.path.normpath(folder_path)

@@ -42,9 +42,6 @@ class FileSearcher:
         self._init_db()
         self._initialized = True
 
-        if self.config.get("index_on_import", False) and not self.is_indexed:
-            threading.Thread(target=self.rebuild_index, kwargs={"show_progress": False}, daemon=True).start()
-
     def _log(self, message: str, level: str = "info") -> None:
         if MAYA_AVAILABLE:
             if level == "error":
@@ -60,7 +57,7 @@ class FileSearcher:
         return {
             "roots": [],
             "file_extensions": [".ma", ".mb", ".abc"],
-            "index_on_import": False,
+            "auto_rebuild_on_launch": False,
             "include_folders": False,
             "max_results": 200,
             "db_path": "fsearch.db",
@@ -82,6 +79,10 @@ class FileSearcher:
 
         defaults = self._default_config()
         defaults.update(cfg if isinstance(cfg, dict) else {})
+        if "auto_rebuild_on_launch" not in defaults:
+            defaults["auto_rebuild_on_launch"] = False
+        if isinstance(cfg, dict) and "index_on_import" in cfg and "auto_rebuild_on_launch" not in cfg:
+            defaults["auto_rebuild_on_launch"] = bool(cfg.get("index_on_import", False))
         return defaults
 
     def refresh_config(self) -> None:
