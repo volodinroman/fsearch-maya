@@ -40,6 +40,38 @@ ROLE_PATH = QtCore.Qt.UserRole + 2
 ITEM_FOLDER = "folder"
 ITEM_FILE = "file"
 MAYA_EXTENSIONS = {".ma", ".mb"}
+TREE_STYLE = """
+QTreeWidget {
+    background-color: #2b2b2b;
+    alternate-background-color: #353535;
+}
+QTreeWidget::item {
+    background-color: #2b2b2b;
+    padding-top: 3px;
+    padding-bottom: 3px;
+}
+QTreeWidget::item:alternate {
+    background-color: #353535;
+    padding-top: 3px;
+    padding-bottom: 3px;
+}
+QTreeWidget::item:selected {
+    background-color: #4b6eaf;
+    color: #ffffff;
+}
+"""
+
+
+class RowHeightDelegate(QtWidgets.QStyledItemDelegate):
+    def __init__(self, row_height, parent=None):
+        super().__init__(parent)
+        self._row_height = int(row_height)
+
+    def sizeHint(self, option, index):
+        hint = super().sizeHint(option, index)
+        if hint.height() < self._row_height:
+            hint.setHeight(self._row_height)
+        return hint
 
 
 def _menu_exec(menu, pos):
@@ -67,7 +99,8 @@ class FileSearcherUI(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent or maya_main_window())
         self.setWindowTitle("FSearch")
-        self.setMinimumSize(900, 620)
+        self.setMinimumSize(1400, 800)
+        self._default_font = QtGui.QFont(self.font())
         icon_path = _THIS_DIR / "assets" / "icon.png"
         if icon_path.exists():
             self.setWindowIcon(QtGui.QIcon(str(icon_path)))
@@ -75,6 +108,11 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.searcher = FileSearcher()
         self._config_path = Path(self.searcher._config_path)
         self._bookmarks = []
+        self._is_loading_settings = False
+        self._window_state_timer = QtCore.QTimer(self)
+        self._window_state_timer.setSingleShot(True)
+        self._window_state_timer.setInterval(300)
+        self._window_state_timer.timeout.connect(self._persist_window_size)
 
         self._build_ui()
         self._connect_signals()
@@ -82,31 +120,37 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._run_auto_rebuild_on_launch_if_enabled()
         self._refresh_stats()
 
-    def _build_ui(self):
-        # self.setStyleSheet(
-        #     """
-        #     QDialog { background: #f3f4f6; color: #1f2937; }
-        #     QTabWidget::pane { border: 1px solid #d1d5db; background: #ffffff; }
-        #     QLineEdit, QListWidget, QTreeWidget, QCheckBox, QSpinBox {
-        #         font-size: 12px;
-        #     }
-        #     QLineEdit, QListWidget, QTreeWidget, QSpinBox {
-        #         border: 1px solid #d1d5db;
-        #         border-radius: 6px;
-        #         padding: 6px;
-        #         background: #ffffff;
-        #     }
-        #     QPushButton {
-        #         background: #e5e7eb;
-        #         border: 1px solid #d1d5db;
-        #         border-radius: 6px;
-        #         padding: 6px 10px;
-        #     }
-        #     QPushButton:hover { background: #dbe1e8; }
-        #     QLabel#Caption { color: #4b5563; font-size: 11px; }
-        #     """
-        # )
+    def _load_custom_font(self, font_size):
+        font_path = _THIS_DIR / "assets" / "JetBrainsMono-Regular.ttf"
+        if not font_path.exists():
+            return None
+        font_id = QtGui.QFontDatabase.addApplicationFont(str(font_path))
+        if font_id < 0:
+            return None
+        families = QtGui.QFontDatabase.applicationFontFamilies(font_id)
+        if not families:
+            return None
+        return QtGui.QFont(families[0], int(font_size))
 
+    def _apply_font_settings(self, use_custom_font, font_size):
+        if use_custom_font:
+            custom_font = self._load_custom_font(font_size)
+            if custom_font is not None:
+                self._ui_font = custom_font
+            else:
+                self._ui_font = QtGui.QFont(self._default_font)
+        else:
+            self._ui_font = QtGui.QFont(self._default_font)
+
+        self.setFont(self._ui_font)
+        if hasattr(self, "results_tree"):
+            self.results_tree.setFont(self._ui_font)
+            self.results_tree.header().setFont(self._ui_font)
+        if hasattr(self, "bookmarks_tree"):
+            self.bookmarks_tree.setFont(self._ui_font)
+            self.bookmarks_tree.header().setFont(self._ui_font)
+
+    def _build_ui(self):
         root = QtWidgets.QVBoxLayout(self)
         self.tabs = QtWidgets.QTabWidget()
         root.addWidget(self.tabs)
@@ -143,6 +187,8 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.results_tree.setHeaderLabel("Folder / Full Path")
         self.results_tree.setRootIsDecorated(True)
         self.results_tree.setAlternatingRowColors(True)
+        self.results_tree.setStyleSheet(TREE_STYLE)
+        self.results_tree.setItemDelegate(RowHeightDelegate(24, self.results_tree))
         self.results_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         layout.addWidget(self.results_tree, 1)
 
@@ -159,6 +205,8 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.bookmarks_tree.setHeaderLabel("Path")
         self.bookmarks_tree.setAlternatingRowColors(True)
         self.bookmarks_tree.setRootIsDecorated(False)
+        self.bookmarks_tree.setStyleSheet(TREE_STYLE)
+        self.bookmarks_tree.setItemDelegate(RowHeightDelegate(24, self.bookmarks_tree))
         self.bookmarks_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         layout.addWidget(self.bookmarks_tree, 1)
 
@@ -191,15 +239,22 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.extensions_edit.setPlaceholderText(".ma, .mb, .abc")
         self.include_folders_check = QtWidgets.QCheckBox("Include folders in index")
         self.auto_rebuild_on_launch_check = QtWidgets.QCheckBox("Auto-rebuilding on launch")
+        self.remember_last_search_check = QtWidgets.QCheckBox("Remember last search")
+        self.use_custom_font_check = QtWidgets.QCheckBox("Use Custom Font")
+        self.font_size_spin = QtWidgets.QSpinBox()
+        self.font_size_spin.setRange(6, 36)
         self.max_results_spin = QtWidgets.QSpinBox()
         self.max_results_spin.setRange(1, 5000)
         self.db_path_edit = QtWidgets.QLineEdit()
         self.db_path_edit.setPlaceholderText("maya_project_index.db")
         form.addRow("Extensions", self.extensions_edit)
         form.addRow("Max results", self.max_results_spin)
+        form.addRow("Font Size", self.font_size_spin)
         form.addRow("DB path", self.db_path_edit)
         form.addRow("", self.include_folders_check)
         form.addRow("", self.auto_rebuild_on_launch_check)
+        form.addRow("", self.remember_last_search_check)
+        form.addRow("", self.use_custom_font_check)
         layout.addLayout(form)
 
         btn_row = QtWidgets.QHBoxLayout()
@@ -219,35 +274,57 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.results_tree.customContextMenuRequested.connect(self._open_context_menu)
         self.results_tree.itemDoubleClicked.connect(self._on_item_double_click)
         self.bookmarks_tree.customContextMenuRequested.connect(self._open_bookmarks_context_menu)
+        self.bookmarks_tree.itemDoubleClicked.connect(self._on_bookmark_item_double_click)
 
         self.add_root_btn.clicked.connect(self._add_root)
         self.remove_root_btn.clicked.connect(self._remove_selected_roots)
         self.save_settings_btn.clicked.connect(self._save_settings)
         self.rebuild_btn.clicked.connect(self._rebuild_index)
+        self.remember_last_search_check.toggled.connect(self._on_remember_last_search_changed)
+        self.use_custom_font_check.toggled.connect(self._on_font_settings_changed)
+        self.font_size_spin.valueChanged.connect(self._on_font_settings_changed)
 
     def _load_settings(self):
-        self.searcher.refresh_config()
-        cfg = self.searcher.config
+        self._is_loading_settings = True
+        try:
+            self.searcher.refresh_config()
+            cfg = self.searcher.config
 
-        self.roots_list.clear()
-        for root in cfg.get("roots", []):
-            self.roots_list.addItem(str(root))
+            self.roots_list.clear()
+            for root in cfg.get("roots", []):
+                self.roots_list.addItem(str(root))
 
-        self.extensions_edit.setText(", ".join(cfg.get("file_extensions", [])))
-        self.include_folders_check.setChecked(bool(cfg.get("include_folders", False)))
-        self.auto_rebuild_on_launch_check.setChecked(
-            bool(cfg.get("auto_rebuild_on_launch", cfg.get("index_on_import", False)))
-        )
-        self.max_results_spin.setValue(int(cfg.get("max_results", 200)))
-        self.db_path_edit.setText(str(cfg.get("db_path", "maya_project_index.db")))
-        self._bookmarks = self._normalize_bookmarks(cfg.get("bookmarks", []))
-        self._populate_bookmarks()
+            self.extensions_edit.setText(", ".join(cfg.get("file_extensions", [])))
+            self.include_folders_check.setChecked(bool(cfg.get("include_folders", False)))
+            self.auto_rebuild_on_launch_check.setChecked(
+                bool(cfg.get("auto_rebuild_on_launch", cfg.get("index_on_import", False)))
+            )
+            self.remember_last_search_check.setChecked(bool(cfg.get("remember_last_search", True)))
+            self.use_custom_font_check.setChecked(bool(cfg.get("use_custom_font", True)))
+            self.font_size_spin.setValue(int(cfg.get("font_size", 10)))
+            self.font_size_spin.setEnabled(self.use_custom_font_check.isChecked())
+            self.max_results_spin.setValue(int(cfg.get("max_results", 200)))
+            self.db_path_edit.setText(str(cfg.get("db_path", "maya_project_index.db")))
+            window_size = cfg.get("window_size", {})
+            if isinstance(window_size, dict):
+                width = int(window_size.get("width", self.width()))
+                height = int(window_size.get("height", self.height()))
+                self.resize(max(self.minimumWidth(), width), max(self.minimumHeight(), height))
+            self._bookmarks = self._normalize_bookmarks(cfg.get("bookmarks", []))
+            self._populate_bookmarks()
+            self._apply_font_settings(self.use_custom_font_check.isChecked(), self.font_size_spin.value())
+            last_query = str(cfg.get("last_search_query", "")).strip()
+            if self.remember_last_search_check.isChecked() and last_query:
+                self.search_edit.setText(last_query)
+        finally:
+            self._is_loading_settings = False
 
     def _refresh_stats(self):
         self.search_status.setText("Type to search.")
 
     def _run_search(self):
         query = self.search_edit.text().strip()
+        self._persist_last_search_query(query)
         if not query:
             self.results_tree.clear()
             self.search_status.setText("Type to search.")
@@ -442,6 +519,13 @@ class FileSearcherUI(QtWidgets.QDialog):
         if self._is_maya_file(item_path):
             self._open_in_maya(item_path)
 
+    def _on_bookmark_item_double_click(self, item, _column):
+        if item.data(0, ROLE_TYPE) != ITEM_FILE:
+            return
+        item_path = item.data(0, ROLE_PATH)
+        if self._is_maya_file(item_path):
+            self._open_in_maya(item_path)
+
     def _add_root(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Choose Root Folder")
         if not folder:
@@ -465,10 +549,34 @@ class FileSearcherUI(QtWidgets.QDialog):
             "include_folders": self.include_folders_check.isChecked(),
             "max_results": int(self.max_results_spin.value()),
             "auto_rebuild_on_launch": self.auto_rebuild_on_launch_check.isChecked(),
+            "remember_last_search": self.remember_last_search_check.isChecked(),
+            "use_custom_font": self.use_custom_font_check.isChecked(),
+            "font_size": int(self.font_size_spin.value()),
             "db_path": self.db_path_edit.text().strip() or "maya_project_index.db",
             "bookmarks": self._bookmarks,
+            "last_search_query": self.search_edit.text().strip() if self.remember_last_search_check.isChecked() else "",
+            "window_size": {"width": int(self.width()), "height": int(self.height())},
         }
         return cfg
+
+    def _on_remember_last_search_changed(self, *_args):
+        if self._is_loading_settings:
+            return
+        if self.remember_last_search_check.isChecked():
+            self._update_config_fields(
+                {
+                    "remember_last_search": True,
+                    "last_search_query": self.search_edit.text().strip(),
+                }
+            )
+        else:
+            self._update_config_fields({"remember_last_search": False, "last_search_query": ""})
+
+    def _on_font_settings_changed(self, *_args):
+        self.font_size_spin.setEnabled(self.use_custom_font_check.isChecked())
+        self._apply_font_settings(self.use_custom_font_check.isChecked(), self.font_size_spin.value())
+        if not self._is_loading_settings:
+            self._save_settings(silent=True)
 
     def _run_auto_rebuild_on_launch_if_enabled(self):
         enabled = bool(self.searcher.config.get("auto_rebuild_on_launch", self.searcher.config.get("index_on_import", False)))
@@ -482,26 +590,62 @@ class FileSearcherUI(QtWidgets.QDialog):
             QtWidgets.QApplication.restoreOverrideCursor()
         self.settings_status.setText("Auto-rebuild completed.")
 
-    def _save_settings(self):
+    def _save_settings(self, silent=False):
         cfg = self._collect_settings()
-        self._config_path.parent.mkdir(parents=True, exist_ok=True)
-        self._config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-        self.searcher.refresh_config()
-        self.settings_status.setText(f"Saved: {self._config_path}")
+        self._update_config_fields(cfg)
+        if not silent:
+            self.settings_status.setText(f"Saved: {self._config_path}")
 
     def _persist_bookmarks(self):
-        cfg = {}
+        cfg = {"bookmarks": self._bookmarks}
+        self._update_config_fields(cfg)
+
+    def _load_config_json(self):
         if self._config_path.exists():
             try:
-                cfg = json.loads(self._config_path.read_text(encoding="utf-8"))
+                raw = json.loads(self._config_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    return raw
             except (json.JSONDecodeError, OSError):
-                cfg = {}
-        if not isinstance(cfg, dict):
-            cfg = {}
-        cfg["bookmarks"] = self._bookmarks
+                pass
+        return {}
+
+    def _update_config_fields(self, updates):
+        cfg = dict(self.searcher.config) if isinstance(self.searcher.config, dict) else {}
+        file_cfg = self._load_config_json()
+        cfg.update(file_cfg)
+        cfg.update(updates)
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         self._config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
         self.searcher.refresh_config()
+
+    def _persist_last_search_query(self, query):
+        if self._is_loading_settings:
+            return
+        if not self.remember_last_search_check.isChecked():
+            return
+        current = str(self.searcher.config.get("last_search_query", ""))
+        if query == current:
+            return
+        self._update_config_fields({"last_search_query": query})
+
+    def _persist_window_size(self):
+        if self._is_loading_settings:
+            return
+        size_payload = {"window_size": {"width": int(self.width()), "height": int(self.height())}}
+        current = self.searcher.config.get("window_size", {})
+        if (
+            isinstance(current, dict)
+            and int(current.get("width", -1)) == size_payload["window_size"]["width"]
+            and int(current.get("height", -1)) == size_payload["window_size"]["height"]
+        ):
+            return
+        self._update_config_fields(size_payload)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not self._is_loading_settings:
+            self._window_state_timer.start()
 
     def _rebuild_index(self):
         self._save_settings()
