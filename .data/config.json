@@ -1,0 +1,14 @@
+{
+  "roots": [
+    "C:/Users/volod/Documents"
+  ],
+  "file_extensions": [
+    ".ma",
+    ".mb",
+    ".abc"
+  ],
+  "include_folders": true,
+  "max_results": 200,
+  "index_on_import": false,
+  "db_path": "fsearch.db"
+}
