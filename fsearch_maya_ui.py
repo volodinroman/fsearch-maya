@@ -66,8 +66,11 @@ def maya_main_window():
 class FileSearcherUI(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent or maya_main_window())
-        self.setWindowTitle("File Searcher")
+        self.setWindowTitle("FSearch")
         self.setMinimumSize(900, 620)
+        icon_path = _THIS_DIR / "assets" / "icon.png"
+        if icon_path.exists():
+            self.setWindowIcon(QtGui.QIcon(str(icon_path)))
 
         self.searcher = FileSearcher()
         self._config_path = Path(self.searcher._config_path)
