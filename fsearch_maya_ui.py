@@ -3,6 +3,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 _THIS_DIR = Path(__file__).resolve().parent
@@ -44,6 +45,7 @@ TREE_STYLE = """
 QTreeWidget {
     background-color: #2b2b2b;
     alternate-background-color: #353535;
+    outline: none;
 }
 QTreeWidget::item {
     background-color: #2b2b2b;
@@ -56,22 +58,122 @@ QTreeWidget::item:alternate {
     padding-bottom: 3px;
 }
 QTreeWidget::item:selected {
-    background-color: #4b6eaf;
+    background-color: #5285a6;
     color: #ffffff;
 }
+
+QTreeWidget::item:focus,
+QTreeView::item:focus {
+    outline: none;
+    border: none;
+}
+
 """
 
 
 class RowHeightDelegate(QtWidgets.QStyledItemDelegate):
-    def __init__(self, row_height, parent=None):
+    def __init__(self, row_height, parent=None, tokens_getter=None):
         super().__init__(parent)
         self._row_height = int(row_height)
+        self._tokens_getter = tokens_getter
 
     def sizeHint(self, option, index):
         hint = super().sizeHint(option, index)
         if hint.height() < self._row_height:
             hint.setHeight(self._row_height)
         return hint
+
+    @staticmethod
+    def _highlight_ranges(text, tokens):
+        text_lower = str(text).lower()
+        ranges = []
+        for token in sorted({t.lower() for t in tokens if t}, key=len, reverse=True):
+            start = 0
+            while True:
+                pos = text_lower.find(token, start)
+                if pos < 0:
+                    break
+                ranges.append((pos, pos + len(token)))
+                start = pos + len(token)
+        if not ranges:
+            return []
+        ranges.sort(key=lambda r: (r[0], r[1]))
+        merged = [list(ranges[0])]
+        for start, end in ranges[1:]:
+            if start > merged[-1][1]:
+                merged.append([start, end])
+            else:
+                merged[-1][1] = max(merged[-1][1], end)
+        return [(s, e) for s, e in merged]
+
+    def paint(self, painter, option, index):
+        if self._tokens_getter is None or index.column() != 0:
+            return super().paint(painter, option, index)
+
+        tokens = self._tokens_getter() or []
+        if not tokens:
+            return super().paint(painter, option, index)
+
+        opt = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        text = opt.text
+        ranges = self._highlight_ranges(text, tokens)
+        if not ranges:
+            return super().paint(painter, option, index)
+
+        style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
+        text_rect = style.subElementRect(QtWidgets.QStyle.SE_ItemViewItemText, opt, opt.widget)
+
+        draw_opt = QtWidgets.QStyleOptionViewItem(opt)
+        draw_opt.text = ""
+        style.drawControl(QtWidgets.QStyle.CE_ItemViewItem, draw_opt, painter, draw_opt.widget)
+
+        normal_font = QtGui.QFont(opt.font)
+        bold_font = QtGui.QFont(opt.font)
+        bold_font.setBold(True)
+        normal_fm = QtGui.QFontMetrics(normal_font)
+        bold_fm = QtGui.QFontMetrics(bold_font)
+
+        if opt.state & QtWidgets.QStyle.State_Selected:
+            normal_color = opt.palette.color(QtGui.QPalette.HighlightedText)
+        else:
+            normal_color = opt.palette.color(QtGui.QPalette.Text)
+        highlight_color = QtGui.QColor("#F6673B")
+
+        segments = []
+        cursor = 0
+        for start, end in ranges:
+            if cursor < start:
+                segments.append((text[cursor:start], False))
+            segments.append((text[start:end], True))
+            cursor = end
+        if cursor < len(text):
+            segments.append((text[cursor:], False))
+
+        painter.save()
+        painter.setClipRect(text_rect)
+        x = text_rect.left()
+        y = text_rect.top() + (text_rect.height() + normal_fm.ascent() - normal_fm.descent()) // 2
+        max_x = text_rect.right()
+
+        for segment_text, is_highlight in segments:
+            if not segment_text:
+                continue
+            if is_highlight:
+                painter.setFont(bold_font)
+                painter.setPen(highlight_color)
+                seg_w = bold_fm.horizontalAdvance(segment_text)
+            else:
+                painter.setFont(normal_font)
+                painter.setPen(normal_color)
+                seg_w = normal_fm.horizontalAdvance(segment_text)
+
+            if x > max_x:
+                break
+            painter.drawText(x, y, segment_text)
+            x += seg_w
+
+        painter.restore()
 
 
 def _menu_exec(menu, pos):
@@ -109,6 +211,11 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._config_path = Path(self.searcher._config_path)
         self._bookmarks = []
         self._is_loading_settings = False
+        self._current_search_tokens = []
+        self._search_debounce_timer = QtCore.QTimer(self)
+        self._search_debounce_timer.setSingleShot(True)
+        self._search_debounce_timer.setInterval(100)
+        self._search_debounce_timer.timeout.connect(self._run_search)
         self._window_state_timer = QtCore.QTimer(self)
         self._window_state_timer.setSingleShot(True)
         self._window_state_timer.setInterval(300)
@@ -172,7 +279,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         layout.setSpacing(8)
 
         self.search_edit = QtWidgets.QLineEdit()
-        self.search_edit.setPlaceholderText("Search: car front or car, front")
+        self.search_edit.setPlaceholderText("Search: car front")
         layout.addWidget(self.search_edit)
 
         search_opts = QtWidgets.QHBoxLayout()
@@ -188,7 +295,9 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.results_tree.setRootIsDecorated(True)
         self.results_tree.setAlternatingRowColors(True)
         self.results_tree.setStyleSheet(TREE_STYLE)
-        self.results_tree.setItemDelegate(RowHeightDelegate(24, self.results_tree))
+        self.results_tree.setItemDelegate(
+            RowHeightDelegate(24, self.results_tree, tokens_getter=lambda: self._current_search_tokens)
+        )
         self.results_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         layout.addWidget(self.results_tree, 1)
 
@@ -243,10 +352,14 @@ class FileSearcherUI(QtWidgets.QDialog):
 
         form = QtWidgets.QFormLayout()
         self.extensions_edit = QtWidgets.QLineEdit()
-        self.extensions_edit.setPlaceholderText(".ma, .mb, .abc")
+        self.extensions_edit.setPlaceholderText(".ma, .mb")
         self.include_folders_check = QtWidgets.QCheckBox("Include folders in index")
         self.auto_rebuild_on_launch_check = QtWidgets.QCheckBox("Auto-rebuilding on launch")
         self.remember_last_search_check = QtWidgets.QCheckBox("Remember last search")
+        self.use_search_debounce_check = QtWidgets.QCheckBox("Use Search Debounce")
+        self.search_debounce_ms_spin = QtWidgets.QSpinBox()
+        self.search_debounce_ms_spin.setRange(0, 2000)
+        self.search_debounce_ms_spin.setSingleStep(25)
         self.use_custom_font_check = QtWidgets.QCheckBox("Use Custom Font")
         self.font_size_spin = QtWidgets.QSpinBox()
         self.font_size_spin.setRange(6, 36)
@@ -257,10 +370,12 @@ class FileSearcherUI(QtWidgets.QDialog):
         form.addRow("Extensions", self.extensions_edit)
         form.addRow("Max results", self.max_results_spin)
         form.addRow("Font Size", self.font_size_spin)
+        form.addRow("Debounce (ms)", self.search_debounce_ms_spin)
         form.addRow("DB path", self.db_path_edit)
         form.addRow("", self.include_folders_check)
         form.addRow("", self.auto_rebuild_on_launch_check)
         form.addRow("", self.remember_last_search_check)
+        form.addRow("", self.use_search_debounce_check)
         form.addRow("", self.use_custom_font_check)
         layout.addLayout(form)
 
@@ -277,7 +392,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         layout.addWidget(self.settings_status)
 
     def _connect_signals(self):
-        self.search_edit.textChanged.connect(self._run_search)
+        self.search_edit.textChanged.connect(self._schedule_search)
         self.results_tree.customContextMenuRequested.connect(self._open_context_menu)
         self.results_tree.itemDoubleClicked.connect(self._on_item_double_click)
         self.bookmarks_tree.customContextMenuRequested.connect(self._open_bookmarks_context_menu)
@@ -289,6 +404,8 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.rebuild_btn.clicked.connect(self._rebuild_index)
         self.delete_all_bookmarks_btn.clicked.connect(self._delete_all_bookmarks)
         self.remember_last_search_check.toggled.connect(self._on_remember_last_search_changed)
+        self.use_search_debounce_check.toggled.connect(self._on_debounce_settings_changed)
+        self.search_debounce_ms_spin.valueChanged.connect(self._on_debounce_settings_changed)
         self.use_custom_font_check.toggled.connect(self._on_font_settings_changed)
         self.font_size_spin.valueChanged.connect(self._on_font_settings_changed)
 
@@ -311,6 +428,10 @@ class FileSearcherUI(QtWidgets.QDialog):
                 bool(cfg.get("auto_rebuild_on_launch", cfg.get("index_on_import", False)))
             )
             self.remember_last_search_check.setChecked(bool(cfg.get("remember_last_search", True)))
+            self.use_search_debounce_check.setChecked(bool(cfg.get("use_search_debounce", True)))
+            self.search_debounce_ms_spin.setValue(int(cfg.get("search_debounce_ms", 200)))
+            self.search_debounce_ms_spin.setEnabled(self.use_search_debounce_check.isChecked())
+            self._search_debounce_timer.setInterval(max(0, int(self.search_debounce_ms_spin.value())))
             self.use_custom_font_check.setChecked(bool(cfg.get("use_custom_font", True)))
             self.font_size_spin.setValue(int(cfg.get("font_size", 10)))
             self.font_size_spin.setEnabled(self.use_custom_font_check.isChecked())
@@ -333,14 +454,23 @@ class FileSearcherUI(QtWidgets.QDialog):
     def _refresh_stats(self):
         self.search_status.setText("Type to search.")
 
+    def _schedule_search(self):
+        if not self.use_search_debounce_check.isChecked():
+            self._run_search()
+            return
+        self._search_debounce_timer.setInterval(max(0, int(self.search_debounce_ms_spin.value())))
+        self._search_debounce_timer.start()
+
     def _run_search(self):
         query = self.search_edit.text().strip()
         self._persist_last_search_query(query)
+        self._current_search_tokens = self._tokens_from_query(query)
         if not query:
             self.results_tree.clear()
             self.search_status.setText("Type to search.")
             return
 
+        started_at = time.perf_counter()
         try:
             if self.regex_check.isChecked():
                 results = self.searcher.regex_search(query)
@@ -361,8 +491,9 @@ class FileSearcherUI(QtWidgets.QDialog):
         files_count = len(results) - folders_count
         fts_rows = sum(1 for row in results if str(row.get("search_source", "")) == "fts")
         fts_percent = (fts_rows / len(results) * 100.0) if results else 0.0
+        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
         self.search_status.setText(
-            f"Found: files {files_count}, folders {folders_count} | FTS5: {fts_percent:.1f}% ({fts_rows}/{len(results)})"
+            f"Found: files {files_count}, folders {folders_count} | FTS5: {fts_percent:.1f}% ({fts_rows}/{len(results)}) | {elapsed_ms:.1f} ms"
         )
 
     def _populate_tree(self, results):
@@ -397,6 +528,14 @@ class FileSearcherUI(QtWidgets.QDialog):
                 folder_item.addChild(child)
             if children:
                 folder_item.setExpanded(True)
+
+    def _tokens_from_query(self, text):
+        tokens = []
+        for token in str(text).split():
+            token = token.strip().lower()
+            if token:
+                tokens.append(token)
+        return tokens
 
     def _normalize_bookmarks(self, raw_bookmarks):
         normalized_bookmarks = []
@@ -613,6 +752,8 @@ class FileSearcherUI(QtWidgets.QDialog):
             "max_results": int(self.max_results_spin.value()),
             "auto_rebuild_on_launch": self.auto_rebuild_on_launch_check.isChecked(),
             "remember_last_search": self.remember_last_search_check.isChecked(),
+            "use_search_debounce": self.use_search_debounce_check.isChecked(),
+            "search_debounce_ms": int(self.search_debounce_ms_spin.value()),
             "use_custom_font": self.use_custom_font_check.isChecked(),
             "font_size": int(self.font_size_spin.value()),
             "db_path": self.db_path_edit.text().strip() or "maya_project_index.db",
@@ -634,6 +775,12 @@ class FileSearcherUI(QtWidgets.QDialog):
             )
         else:
             self._update_config_fields({"remember_last_search": False, "last_search_query": ""})
+
+    def _on_debounce_settings_changed(self, *_args):
+        self.search_debounce_ms_spin.setEnabled(self.use_search_debounce_check.isChecked())
+        self._search_debounce_timer.setInterval(max(0, int(self.search_debounce_ms_spin.value())))
+        if not self._is_loading_settings:
+            self._save_settings(silent=True)
 
     def _on_font_settings_changed(self, *_args):
         self.font_size_spin.setEnabled(self.use_custom_font_check.isChecked())

@@ -56,13 +56,15 @@ class FileSearcher:
     def _default_config(self) -> Dict:
         return {
             "roots": [],
-            "file_extensions": [".ma", ".mb", ".abc"],
+            "file_extensions": [".ma", ".mb"],
             "auto_rebuild_on_launch": False,
             "use_custom_font": True,
             "font_size": 10,
             "remember_last_search": True,
             "last_search_query": "",
             "window_size": {"width": 1400, "height": 800},
+            "use_search_debounce": True,
+            "search_debounce_ms": 200,
             "include_folders": False,
             "max_results": 200,
             "db_path": "fsearch.db",
@@ -305,7 +307,7 @@ class FileSearcher:
 
     def _tokens_from_text(self, text: str) -> List[str]:
         tokens = []
-        for token in text.replace(",", " ").split():
+        for token in text.split():
             token = token.strip().lower()
             if token:
                 tokens.append(token)
