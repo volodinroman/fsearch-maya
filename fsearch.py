@@ -311,12 +311,32 @@ class FileSearcher:
                 tokens.append(token)
         return tokens
 
+    def _build_fts_match_query(self, tokens: List[str]) -> str:
+        # Quote each token to avoid FTS syntax issues on special characters.
+        safe_tokens = [f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens]
+        return " AND ".join(safe_tokens)
+
     def search(self, query: str, limit: Optional[int] = None) -> List[Dict]:
         tokens = self._tokens_from_text(query)
         if not tokens:
             return []
 
         max_results = int(limit or self.config.get("max_results", 200))
+        collected: List[Dict] = []
+        seen_paths = set()
+
+        def _append_rows(rows, source: str):
+            for row in rows:
+                row_dict = dict(row)
+                row_path = str(row_dict.get("path", "")).lower()
+                if not row_path or row_path in seen_paths:
+                    continue
+                row_dict["search_source"] = source
+                seen_paths.add(row_path)
+                collected.append(row_dict)
+                if len(collected) >= max_results:
+                    break
+
         where_parts = []
         params = []
         for token in tokens:
@@ -327,18 +347,38 @@ class FileSearcher:
         where_clause = " AND ".join(where_parts)
         with self._db_lock:
             cur = self._conn.cursor()
-            cur.execute(
-                f"""
-                SELECT path, filename, modified, size, is_dir, 0.0 AS rank
-                FROM files
-                WHERE {where_clause}
-                ORDER BY is_dir ASC, path ASC
-                LIMIT ?;
-                """,
-                (*params, max_results),
-            )
-            rows = cur.fetchall()
-        return [dict(r) for r in rows]
+            fts_match_query = self._build_fts_match_query(tokens)
+            try:
+                cur.execute(
+                    """
+                    SELECT f.path, f.filename, f.modified, f.size, f.is_dir, bm25(files_fts) AS rank
+                    FROM files_fts
+                    JOIN files AS f ON f.id = files_fts.rowid
+                    WHERE files_fts MATCH ?
+                    ORDER BY rank ASC, f.is_dir ASC, f.path ASC
+                    LIMIT ?;
+                    """,
+                    (fts_match_query, max_results),
+                )
+                _append_rows(cur.fetchall(), "fts")
+            except sqlite3.Error:
+                # Fallback to LIKE-only behavior if MATCH query fails.
+                pass
+
+            if len(collected) < max_results:
+                cur.execute(
+                    f"""
+                    SELECT path, filename, modified, size, is_dir, 0.0 AS rank
+                    FROM files
+                    WHERE {where_clause}
+                    ORDER BY is_dir ASC, path ASC
+                    LIMIT ?;
+                    """,
+                    (*params, max_results),
+                )
+                _append_rows(cur.fetchall(), "like")
+
+        return collected[:max_results]
 
     def regex_search(self, pattern: str, limit: Optional[int] = None) -> List[Dict]:
         max_results = int(limit or self.config.get("max_results", 200))

@@ -359,7 +359,11 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._populate_tree(results)
         folders_count = sum(1 for row in results if bool(row.get("is_dir", 0)))
         files_count = len(results) - folders_count
-        self.search_status.setText(f"Found: files {files_count}, folders {folders_count}")
+        fts_rows = sum(1 for row in results if str(row.get("search_source", "")) == "fts")
+        fts_percent = (fts_rows / len(results) * 100.0) if results else 0.0
+        self.search_status.setText(
+            f"Found: files {files_count}, folders {folders_count} | FTS5: {fts_percent:.1f}% ({fts_rows}/{len(results)})"
+        )
 
     def _populate_tree(self, results):
         self.results_tree.clear()
