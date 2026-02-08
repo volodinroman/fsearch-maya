@@ -1,27 +1,25 @@
 import json
-import importlib.util
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+import maya.OpenMayaUI as omui  # type: ignore
+import maya.cmds as cmds  # type: ignore
+from fsearch import FileSearcher
+from fsearch_ui_common import (
+    ITEM_FILE,
+    ITEM_FOLDER,
+    MAYA_EXTENSIONS,
+    ROLE_PATH,
+    ROLE_TYPE,
+    TREE_STYLE,
+    WINDOW_OBJECT_NAME,
+    RowHeightDelegate,
+)
+
 _THIS_DIR = Path(__file__).resolve().parent
-_SEARCHER_PATH = _THIS_DIR / "fsearch.py"
-_SEARCHER_SPEC = importlib.util.spec_from_file_location("codex_file_searcher_runtime", str(_SEARCHER_PATH))
-if _SEARCHER_SPEC is None or _SEARCHER_SPEC.loader is None:
-    raise RuntimeError(f"Could not load file_searcher from {_SEARCHER_PATH}")
-_SEARCHER_MODULE = importlib.util.module_from_spec(_SEARCHER_SPEC)
-_SEARCHER_SPEC.loader.exec_module(_SEARCHER_MODULE)
-FileSearcher = _SEARCHER_MODULE.FileSearcher
-
-try:
-    import maya.cmds as cmds  # type: ignore
-    import maya.OpenMayaUI as omui  # type: ignore
-
-    MAYA_AVAILABLE = True
-except Exception:
-    MAYA_AVAILABLE = False
 
 QT_API = None
 try:
@@ -34,148 +32,6 @@ except Exception:
     from shiboken2 import wrapInstance
 
     QT_API = "PySide2"
-
-
-ROLE_TYPE = QtCore.Qt.UserRole + 1
-ROLE_PATH = QtCore.Qt.UserRole + 2
-ITEM_FOLDER = "folder"
-ITEM_FILE = "file"
-MAYA_EXTENSIONS = {".ma", ".mb"}
-WINDOW_OBJECT_NAME = "fsearchMayaUI"
-TREE_STYLE = """
-QTreeWidget {
-    background-color: #2b2b2b;
-    alternate-background-color: #353535;
-    outline: none;
-}
-QTreeWidget::item {
-    background-color: #2b2b2b;
-    padding-top: 3px;
-    padding-bottom: 3px;
-}
-QTreeWidget::item:alternate {
-    background-color: #353535;
-    padding-top: 3px;
-    padding-bottom: 3px;
-}
-QTreeWidget::item:selected {
-    background-color: #5285a6;
-    color: #ffffff;
-}
-
-QTreeWidget::item:focus,
-QTreeView::item:focus {
-    outline: none;
-    border: none;
-}
-
-"""
-
-
-class RowHeightDelegate(QtWidgets.QStyledItemDelegate):
-    def __init__(self, row_height, parent=None, tokens_getter=None):
-        super().__init__(parent)
-        self._row_height = int(row_height)
-        self._tokens_getter = tokens_getter
-
-    def sizeHint(self, option, index):
-        hint = super().sizeHint(option, index)
-        if hint.height() < self._row_height:
-            hint.setHeight(self._row_height)
-        return hint
-
-    @staticmethod
-    def _highlight_ranges(text, tokens):
-        text_lower = str(text).lower()
-        ranges = []
-        for token in sorted({t.lower() for t in tokens if t}, key=len, reverse=True):
-            start = 0
-            while True:
-                pos = text_lower.find(token, start)
-                if pos < 0:
-                    break
-                ranges.append((pos, pos + len(token)))
-                start = pos + len(token)
-        if not ranges:
-            return []
-        ranges.sort(key=lambda r: (r[0], r[1]))
-        merged = [list(ranges[0])]
-        for start, end in ranges[1:]:
-            if start > merged[-1][1]:
-                merged.append([start, end])
-            else:
-                merged[-1][1] = max(merged[-1][1], end)
-        return [(s, e) for s, e in merged]
-
-    def paint(self, painter, option, index):
-        if self._tokens_getter is None or index.column() != 0:
-            return super().paint(painter, option, index)
-
-        tokens = self._tokens_getter() or []
-        if not tokens:
-            return super().paint(painter, option, index)
-
-        opt = QtWidgets.QStyleOptionViewItem(option)
-        self.initStyleOption(opt, index)
-        text = opt.text
-        ranges = self._highlight_ranges(text, tokens)
-        if not ranges:
-            return super().paint(painter, option, index)
-
-        style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
-        text_rect = style.subElementRect(QtWidgets.QStyle.SE_ItemViewItemText, opt, opt.widget)
-
-        draw_opt = QtWidgets.QStyleOptionViewItem(opt)
-        draw_opt.text = ""
-        style.drawControl(QtWidgets.QStyle.CE_ItemViewItem, draw_opt, painter, draw_opt.widget)
-
-        normal_font = QtGui.QFont(opt.font)
-        bold_font = QtGui.QFont(opt.font)
-        bold_font.setBold(True)
-        normal_fm = QtGui.QFontMetrics(normal_font)
-        bold_fm = QtGui.QFontMetrics(bold_font)
-
-        if opt.state & QtWidgets.QStyle.State_Selected:
-            normal_color = opt.palette.color(QtGui.QPalette.HighlightedText)
-        else:
-            normal_color = opt.palette.color(QtGui.QPalette.Text)
-        highlight_color = QtGui.QColor("#F6673B")
-
-        segments = []
-        cursor = 0
-        for start, end in ranges:
-            if cursor < start:
-                segments.append((text[cursor:start], False))
-            segments.append((text[start:end], True))
-            cursor = end
-        if cursor < len(text):
-            segments.append((text[cursor:], False))
-
-        painter.save()
-        painter.setClipRect(text_rect)
-        x = text_rect.left()
-        y = text_rect.top() + (text_rect.height() + normal_fm.ascent() - normal_fm.descent()) // 2
-        max_x = text_rect.right()
-
-        for segment_text, is_highlight in segments:
-            if not segment_text:
-                continue
-            if is_highlight:
-                painter.setFont(bold_font)
-                painter.setPen(highlight_color)
-                seg_w = bold_fm.horizontalAdvance(segment_text)
-            else:
-                painter.setFont(normal_font)
-                painter.setPen(normal_color)
-                seg_w = normal_fm.horizontalAdvance(segment_text)
-
-            if x > max_x:
-                break
-            painter.drawText(x, y, segment_text)
-            x += seg_w
-
-        painter.restore()
-
 
 def _menu_exec(menu, pos):
     if hasattr(menu, "exec"):
@@ -190,8 +46,6 @@ def _app_exec(app):
 
 
 def maya_main_window():
-    if not MAYA_AVAILABLE:
-        return None
     ptr = omui.MQtUtil.mainWindow()
     if ptr is None:
         return None
@@ -876,14 +730,10 @@ class FileSearcherUI(QtWidgets.QDialog):
         file_path = os.path.normpath(file_path)
         if not self._is_maya_file(file_path):
             return
-        if MAYA_AVAILABLE:
-            try:
-                cmds.file(file_path, open=True, force=True)
-                return
-            except Exception as exc:
-                QtWidgets.QMessageBox.warning(self, "Open File", f"Failed to open in Maya:\n{exc}")
-                return
-        QtWidgets.QMessageBox.warning(self, "Open in Maya", "Maya API is not available in this session.")
+        try:
+            cmds.file(file_path, open=True, force=True)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Open File", f"Failed to open in Maya:\n{exc}")
 
     def _open_folder(self, folder_path):
         folder_path = os.path.normpath(folder_path)
@@ -904,16 +754,15 @@ class FileSearcherUI(QtWidgets.QDialog):
 
 
 def show_file_searcher_ui():
-    if MAYA_AVAILABLE:
-        try:
-            if cmds.window(WINDOW_OBJECT_NAME, exists=True):
-                cmds.deleteUI(WINDOW_OBJECT_NAME, window=True)
-            elif cmds.control(WINDOW_OBJECT_NAME, exists=True):
-                cmds.deleteUI(WINDOW_OBJECT_NAME, control=True)
-            elif cmds.workspaceControl(WINDOW_OBJECT_NAME, exists=True):
-                cmds.deleteUI(WINDOW_OBJECT_NAME, control=True)
-        except Exception:
-            pass
+    try:
+        if cmds.window(WINDOW_OBJECT_NAME, exists=True):
+            cmds.deleteUI(WINDOW_OBJECT_NAME, window=True)
+        elif cmds.control(WINDOW_OBJECT_NAME, exists=True):
+            cmds.deleteUI(WINDOW_OBJECT_NAME, control=True)
+        elif cmds.workspaceControl(WINDOW_OBJECT_NAME, exists=True):
+            cmds.deleteUI(WINDOW_OBJECT_NAME, control=True)
+    except Exception:
+        pass
 
     window = FileSearcherUI()
     window.show()
