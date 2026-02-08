@@ -99,7 +99,7 @@ class FileSearcherUI(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent or maya_main_window())
         self.setWindowTitle("FSearch")
-        self.setMinimumSize(1400, 800)
+        self.setMinimumSize(600, 600)
         self._default_font = QtGui.QFont(self.font())
         icon_path = _THIS_DIR / "assets" / "icon.png"
         if icon_path.exists():
@@ -205,10 +205,17 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.bookmarks_tree.setHeaderLabel("Path")
         self.bookmarks_tree.setAlternatingRowColors(True)
         self.bookmarks_tree.setRootIsDecorated(False)
+        self.bookmarks_tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.bookmarks_tree.setStyleSheet(TREE_STYLE)
         self.bookmarks_tree.setItemDelegate(RowHeightDelegate(24, self.bookmarks_tree))
         self.bookmarks_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         layout.addWidget(self.bookmarks_tree, 1)
+
+        bookmarks_btn_row = QtWidgets.QHBoxLayout()
+        self.delete_all_bookmarks_btn = QtWidgets.QPushButton("Delete All Bookmarks")
+        bookmarks_btn_row.addWidget(self.delete_all_bookmarks_btn)
+        bookmarks_btn_row.addStretch(1)
+        layout.addLayout(bookmarks_btn_row)
 
         self.bookmarks_status = QtWidgets.QLabel("Bookmarks: 0")
         self.bookmarks_status.setObjectName("Caption")
@@ -280,9 +287,13 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.remove_root_btn.clicked.connect(self._remove_selected_roots)
         self.save_settings_btn.clicked.connect(self._save_settings)
         self.rebuild_btn.clicked.connect(self._rebuild_index)
+        self.delete_all_bookmarks_btn.clicked.connect(self._delete_all_bookmarks)
         self.remember_last_search_check.toggled.connect(self._on_remember_last_search_changed)
         self.use_custom_font_check.toggled.connect(self._on_font_settings_changed)
         self.font_size_spin.valueChanged.connect(self._on_font_settings_changed)
+
+        self.delete_bookmarks_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence.Delete, self.bookmarks_tree)
+        self.delete_bookmarks_shortcut.activated.connect(self._remove_selected_bookmarks)
 
     def _load_settings(self):
         self._is_loading_settings = True
@@ -445,6 +456,35 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._populate_bookmarks()
         self._persist_bookmarks()
 
+    def _remove_selected_bookmarks(self):
+        selected = self.bookmarks_tree.selectedItems()
+        if not selected:
+            return
+        targets = {
+            (
+                item.data(0, ROLE_TYPE),
+                str(item.data(0, ROLE_PATH) or "").replace("\\", "/").lower(),
+            )
+            for item in selected
+            if item.data(0, ROLE_TYPE) in (ITEM_FILE, ITEM_FOLDER) and item.data(0, ROLE_PATH)
+        }
+        if not targets:
+            return
+        self._bookmarks = [
+            b
+            for b in self._bookmarks
+            if (b.get("type"), str(b.get("path", "")).replace("\\", "/").lower()) not in targets
+        ]
+        self._populate_bookmarks()
+        self._persist_bookmarks()
+
+    def _delete_all_bookmarks(self):
+        if not self._bookmarks:
+            return
+        self._bookmarks = []
+        self._populate_bookmarks()
+        self._persist_bookmarks()
+
     def _open_context_menu(self, pos):
         item = self.results_tree.itemAt(pos)
         if item is None:
@@ -472,7 +512,6 @@ class FileSearcherUI(QtWidgets.QDialog):
             if self._is_maya_file(item_path):
                 open_action = menu.addAction("Open File")
             copy_action = menu.addAction("Copy Path")
-            reveal_action = menu.addAction("Reveal in Explorer")
             open_folder_action = menu.addAction("Open Containing Folder")
             bookmark_action = menu.addAction("Create Bookmark")
             chosen = _menu_exec(menu, self.results_tree.viewport().mapToGlobal(pos))
@@ -480,8 +519,6 @@ class FileSearcherUI(QtWidgets.QDialog):
                 self._open_in_maya(item_path)
             elif chosen == copy_action:
                 QtWidgets.QApplication.clipboard().setText(item_path)
-            elif chosen == reveal_action:
-                self._reveal_in_explorer(item_path, is_file=True)
             elif chosen == open_folder_action:
                 self._open_folder(str(Path(item_path).parent))
             elif chosen == bookmark_action:
@@ -492,25 +529,47 @@ class FileSearcherUI(QtWidgets.QDialog):
         if item is None:
             return
 
-        item_type = item.data(0, ROLE_TYPE)
-        item_path = item.data(0, ROLE_PATH)
-        if not item_path or item_type not in (ITEM_FILE, ITEM_FOLDER):
+        selected_items = self.bookmarks_tree.selectedItems()
+        if item not in selected_items:
+            self.bookmarks_tree.clearSelection()
+            item.setSelected(True)
+            self.bookmarks_tree.setCurrentItem(item)
+            selected_items = [item]
+        valid_selected = [
+            it
+            for it in selected_items
+            if it.data(0, ROLE_TYPE) in (ITEM_FILE, ITEM_FOLDER) and it.data(0, ROLE_PATH)
+        ]
+        if not valid_selected:
             return
+        single_item = valid_selected[0] if len(valid_selected) == 1 else None
 
         menu = QtWidgets.QMenu(self)
-        reveal_action = menu.addAction("Reveal in Explorer")
+        open_folder_action = menu.addAction("Open Containing Folder")
         open_maya_action = None
-        if item_type == ITEM_FILE and self._is_maya_file(item_path):
+        if single_item is not None:
+            item_type = single_item.data(0, ROLE_TYPE)
+            item_path = single_item.data(0, ROLE_PATH)
+        else:
+            item_type = None
+            item_path = None
+        if single_item is not None and item_type == ITEM_FILE and self._is_maya_file(item_path):
             open_maya_action = menu.addAction("Open in Maya")
         remove_action = menu.addAction("Remove Bookmark")
 
         chosen = _menu_exec(menu, self.bookmarks_tree.viewport().mapToGlobal(pos))
-        if chosen == reveal_action:
-            self._reveal_in_explorer(item_path, is_file=(item_type == ITEM_FILE))
+        if chosen == open_folder_action:
+            for selected_item in valid_selected:
+                selected_type = selected_item.data(0, ROLE_TYPE)
+                selected_path = selected_item.data(0, ROLE_PATH)
+                if selected_type == ITEM_FILE:
+                    self._open_folder(str(Path(selected_path).parent))
+                else:
+                    self._open_folder(selected_path)
         elif open_maya_action is not None and chosen == open_maya_action:
             self._open_in_maya(item_path)
         elif chosen == remove_action:
-            self._remove_bookmark(item_path, item_type)
+            self._remove_selected_bookmarks()
 
     def _on_item_double_click(self, item, _column):
         if item.data(0, ROLE_TYPE) != ITEM_FILE:
