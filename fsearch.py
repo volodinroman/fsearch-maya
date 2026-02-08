@@ -63,7 +63,7 @@ class FileSearcher:
             "index_on_import": False,
             "include_folders": False,
             "max_results": 200,
-            "db_path": "maya_project_index.db",
+            "db_path": "fsearch.db",
         }
 
     def _load_config(self, path: Path) -> Dict:
