@@ -65,6 +65,7 @@ class FileSearcher:
             "window_size": {"width": 1400, "height": 800},
             "use_search_debounce": True,
             "search_debounce_ms": 200,
+            "regex_case_sensitive": False,
             "include_folders": False,
             "max_results": 200,
             "db_path": "fsearch.db",

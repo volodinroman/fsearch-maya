@@ -41,6 +41,7 @@ ROLE_PATH = QtCore.Qt.UserRole + 2
 ITEM_FOLDER = "folder"
 ITEM_FILE = "file"
 MAYA_EXTENSIONS = {".ma", ".mb"}
+WINDOW_OBJECT_NAME = "fsearchMayaUI"
 TREE_STYLE = """
 QTreeWidget {
     background-color: #2b2b2b;
@@ -200,6 +201,7 @@ def maya_main_window():
 class FileSearcherUI(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent or maya_main_window())
+        self.setObjectName(WINDOW_OBJECT_NAME)
         self.setWindowTitle("FSearch")
         self.setMinimumSize(600, 600)
         self._default_font = QtGui.QFont(self.font())
@@ -284,9 +286,7 @@ class FileSearcherUI(QtWidgets.QDialog):
 
         search_opts = QtWidgets.QHBoxLayout()
         self.regex_check = QtWidgets.QCheckBox("Regex")
-        self.case_sensitive_check = QtWidgets.QCheckBox("Case Sensitive (Regex)")
         search_opts.addWidget(self.regex_check)
-        search_opts.addWidget(self.case_sensitive_check)
         search_opts.addStretch(1)
         layout.addLayout(search_opts)
 
@@ -355,6 +355,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.extensions_edit.setPlaceholderText(".ma, .mb")
         self.include_folders_check = QtWidgets.QCheckBox("Include folders in index")
         self.auto_rebuild_on_launch_check = QtWidgets.QCheckBox("Auto-rebuilding on launch")
+        self.regex_case_sensitive_check = QtWidgets.QCheckBox("Case Sensitive (Regex)")
         self.remember_last_search_check = QtWidgets.QCheckBox("Remember last search")
         self.use_search_debounce_check = QtWidgets.QCheckBox("Use Search Debounce")
         self.search_debounce_ms_spin = QtWidgets.QSpinBox()
@@ -374,6 +375,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         form.addRow("DB path", self.db_path_edit)
         form.addRow("", self.include_folders_check)
         form.addRow("", self.auto_rebuild_on_launch_check)
+        form.addRow("", self.regex_case_sensitive_check)
         form.addRow("", self.remember_last_search_check)
         form.addRow("", self.use_search_debounce_check)
         form.addRow("", self.use_custom_font_check)
@@ -427,6 +429,7 @@ class FileSearcherUI(QtWidgets.QDialog):
             self.auto_rebuild_on_launch_check.setChecked(
                 bool(cfg.get("auto_rebuild_on_launch", cfg.get("index_on_import", False)))
             )
+            self.regex_case_sensitive_check.setChecked(bool(cfg.get("regex_case_sensitive", False)))
             self.remember_last_search_check.setChecked(bool(cfg.get("remember_last_search", True)))
             self.use_search_debounce_check.setChecked(bool(cfg.get("use_search_debounce", True)))
             self.search_debounce_ms_spin.setValue(int(cfg.get("search_debounce_ms", 200)))
@@ -474,7 +477,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         try:
             if self.regex_check.isChecked():
                 results = self.searcher.regex_search(query)
-                if self.case_sensitive_check.isChecked():
+                if self.regex_case_sensitive_check.isChecked():
                     # case-sensitive filtering when regex mode requests it
                     import re
 
@@ -751,6 +754,7 @@ class FileSearcherUI(QtWidgets.QDialog):
             "include_folders": self.include_folders_check.isChecked(),
             "max_results": int(self.max_results_spin.value()),
             "auto_rebuild_on_launch": self.auto_rebuild_on_launch_check.isChecked(),
+            "regex_case_sensitive": self.regex_case_sensitive_check.isChecked(),
             "remember_last_search": self.remember_last_search_check.isChecked(),
             "use_search_debounce": self.use_search_debounce_check.isChecked(),
             "search_debounce_ms": int(self.search_debounce_ms_spin.value()),
@@ -899,17 +903,23 @@ class FileSearcherUI(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "Reveal", f"Failed to reveal path:\n{exc}")
 
 
-_WINDOW_INSTANCE = None
-
-
 def show_file_searcher_ui():
-    global _WINDOW_INSTANCE
-    if _WINDOW_INSTANCE is None:
-        _WINDOW_INSTANCE = FileSearcherUI()
-    _WINDOW_INSTANCE.show()
-    _WINDOW_INSTANCE.raise_()
-    _WINDOW_INSTANCE.activateWindow()
-    return _WINDOW_INSTANCE
+    if MAYA_AVAILABLE:
+        try:
+            if cmds.window(WINDOW_OBJECT_NAME, exists=True):
+                cmds.deleteUI(WINDOW_OBJECT_NAME, window=True)
+            elif cmds.control(WINDOW_OBJECT_NAME, exists=True):
+                cmds.deleteUI(WINDOW_OBJECT_NAME, control=True)
+            elif cmds.workspaceControl(WINDOW_OBJECT_NAME, exists=True):
+                cmds.deleteUI(WINDOW_OBJECT_NAME, control=True)
+        except Exception:
+            pass
+
+    window = FileSearcherUI()
+    window.show()
+    window.raise_()
+    window.activateWindow()
+    return window
 
 
 if __name__ == "__main__":
