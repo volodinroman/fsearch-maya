@@ -35,6 +35,13 @@ except Exception:
 
     QT_API = "PySide2"
 
+if hasattr(QtWidgets, "QShortcut"):
+    QShortcutClass = QtWidgets.QShortcut
+elif hasattr(QtGui, "QShortcut"):
+    QShortcutClass = QtGui.QShortcut
+else:
+    QShortcutClass = None
+
 def _menu_exec(menu, pos):
     """Qt5/Qt6-compatible context menu execution."""
     if hasattr(menu, "exec"):
@@ -328,8 +335,9 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.extensions_edit.editingFinished.connect(self._on_general_settings_changed)
         self.db_path_edit.editingFinished.connect(self._on_general_settings_changed)
 
-        self.delete_bookmarks_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence.Delete, self.bookmarks_tree)
-        self.delete_bookmarks_shortcut.activated.connect(self._remove_selected_bookmarks)
+        if QShortcutClass is not None:
+            self.delete_bookmarks_shortcut = QShortcutClass(QtGui.QKeySequence.Delete, self.bookmarks_tree)
+            self.delete_bookmarks_shortcut.activated.connect(self._remove_selected_bookmarks)
 
     def _load_settings(self):
         """Load settings from config and apply them to widgets."""
