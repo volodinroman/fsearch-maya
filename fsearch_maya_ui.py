@@ -57,6 +57,26 @@ def maya_main_window():
     return wrapInstance(int(ptr), QtWidgets.QWidget)
 
 
+class RebuildIndexWorker(QtCore.QObject):
+    """Background worker that rebuilds index and reports progress."""
+
+    progress = QtCore.Signal(str)
+    finished = QtCore.Signal()
+    failed = QtCore.Signal(str)
+
+    def __init__(self, searcher):
+        super().__init__()
+        self._searcher = searcher
+
+    @QtCore.Slot()
+    def run(self):
+        try:
+            self._searcher.rebuild_index(show_progress=True, callback=lambda msg: self.progress.emit(str(msg)))
+            self.finished.emit()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class FileSearcherUI(QtWidgets.QDialog):
     """Main dialog: search results, bookmarks, and settings tabs."""
 
@@ -83,6 +103,8 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._window_state_timer.setSingleShot(True)
         self._window_state_timer.setInterval(300)
         self._window_state_timer.timeout.connect(self._persist_window_size)
+        self._rebuild_thread = None
+        self._rebuild_worker = None
 
         self._build_ui()
         self._connect_signals()
@@ -127,6 +149,10 @@ class FileSearcherUI(QtWidgets.QDialog):
         root = QtWidgets.QVBoxLayout(self)
         self.tabs = QtWidgets.QTabWidget()
         root.addWidget(self.tabs)
+        self.global_status_label = QtWidgets.QLabel("")
+        self.global_status_label.setObjectName("Caption")
+        self.global_status_label.setVisible(False)
+        root.addWidget(self.global_status_label)
 
         self.search_tab = QtWidgets.QWidget()
         self.bookmarks_tab = QtWidgets.QWidget()
@@ -295,6 +321,12 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.search_debounce_ms_spin.valueChanged.connect(self._on_debounce_settings_changed)
         self.use_custom_font_check.toggled.connect(self._on_font_settings_changed)
         self.font_size_spin.valueChanged.connect(self._on_font_settings_changed)
+        self.auto_rebuild_on_launch_check.toggled.connect(self._on_general_settings_changed)
+        self.include_folders_check.toggled.connect(self._on_general_settings_changed)
+        self.regex_case_sensitive_check.toggled.connect(self._on_general_settings_changed)
+        self.max_results_spin.valueChanged.connect(self._on_general_settings_changed)
+        self.extensions_edit.editingFinished.connect(self._on_general_settings_changed)
+        self.db_path_edit.editingFinished.connect(self._on_general_settings_changed)
 
         self.delete_bookmarks_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence.Delete, self.bookmarks_tree)
         self.delete_bookmarks_shortcut.activated.connect(self._remove_selected_bookmarks)
@@ -642,10 +674,14 @@ class FileSearcherUI(QtWidgets.QDialog):
         existing = {self.roots_list.item(i).text() for i in range(self.roots_list.count())}
         if normalized not in existing:
             self.roots_list.addItem(normalized)
+            if not self._is_loading_settings:
+                self._save_settings(silent=True)
 
     def _remove_selected_roots(self):
         for item in self.roots_list.selectedItems():
             self.roots_list.takeItem(self.roots_list.row(item))
+        if not self._is_loading_settings:
+            self._save_settings(silent=True)
 
     def _collect_settings(self):
         """Collect current settings into a config payload."""
@@ -693,6 +729,12 @@ class FileSearcherUI(QtWidgets.QDialog):
         if not self._is_loading_settings:
             self._save_settings(silent=True)
 
+    def _on_general_settings_changed(self, *_args):
+        """Persist basic settings controls that should update immediately."""
+        if self._is_loading_settings:
+            return
+        self._save_settings(silent=True)
+
     def _on_fts5_settings_changed(self, *_args):
         if not self._is_loading_settings:
             self._save_settings(silent=True)
@@ -710,13 +752,12 @@ class FileSearcherUI(QtWidgets.QDialog):
         enabled = bool(self.searcher.config.get("auto_rebuild_on_launch", self.searcher.config.get("index_on_import", False)))
         if not enabled:
             return
-        self.settings_status.setText("Auto-rebuilding index on launch...")
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-        try:
-            self.searcher.rebuild_index(show_progress=True)
-        finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
-        self.settings_status.setText("Auto-rebuild completed.")
+        self._start_rebuild(auto=True)
+
+    def _set_global_status(self, text):
+        text = str(text or "").strip()
+        self.global_status_label.setText(text)
+        self.global_status_label.setVisible(bool(text))
 
     def _save_settings(self, silent=False):
         """Save full settings payload to config."""
@@ -783,17 +824,67 @@ class FileSearcherUI(QtWidgets.QDialog):
         if not self._is_loading_settings:
             self._window_state_timer.start()
 
+    def closeEvent(self, event):
+        """Persist full settings payload when dialog is closing."""
+        try:
+            if not self._is_loading_settings:
+                self._save_settings(silent=True)
+        finally:
+            super().closeEvent(event)
+
     def _rebuild_index(self):
         """Save settings, rebuild index, and refresh current search."""
         self._save_settings()
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-        try:
-            self.searcher.rebuild_index(show_progress=True)
-        finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
+        self._start_rebuild(auto=False)
+
+    def _start_rebuild(self, auto=False):
+        """Start index rebuild in background thread and keep UI responsive."""
+        if self._rebuild_thread is not None:
+            self.settings_status.setText("Index rebuild is already running...")
+            return
+
+        self._rebuild_worker = RebuildIndexWorker(self.searcher)
+        self._rebuild_thread = QtCore.QThread(self)
+        self._rebuild_worker.moveToThread(self._rebuild_thread)
+        self._rebuild_thread.started.connect(self._rebuild_worker.run)
+        self._rebuild_worker.progress.connect(self._on_rebuild_progress)
+        self._rebuild_worker.finished.connect(lambda: self._on_rebuild_finished(auto=auto))
+        self._rebuild_worker.failed.connect(self._on_rebuild_failed)
+        self._rebuild_worker.finished.connect(self._rebuild_thread.quit)
+        self._rebuild_worker.failed.connect(self._rebuild_thread.quit)
+        self._rebuild_thread.finished.connect(self._cleanup_rebuild_thread)
+
+        self.rebuild_btn.setEnabled(False)
+        self.save_settings_btn.setEnabled(False)
+        self.settings_status.setText("Auto-rebuilding index on launch..." if auto else "Rebuilding index...")
+        self._set_global_status("Indexing in progress...")
+        self._rebuild_thread.start()
+
+    def _on_rebuild_progress(self, message):
+        self.settings_status.setText(str(message))
+        self._set_global_status("Indexing in progress...")
+
+    def _on_rebuild_finished(self, auto=False):
+        self.rebuild_btn.setEnabled(True)
+        self.save_settings_btn.setEnabled(True)
         self._refresh_stats()
-        self.settings_status.setText("Index rebuild completed.")
         self._run_search()
+        self.settings_status.setText("Auto-rebuild completed." if auto else "Index rebuild completed.")
+        self._set_global_status("")
+
+    def _on_rebuild_failed(self, error_message):
+        self.rebuild_btn.setEnabled(True)
+        self.save_settings_btn.setEnabled(True)
+        self.settings_status.setText(f"Index rebuild failed: {error_message}")
+        self._set_global_status("")
+
+    def _cleanup_rebuild_thread(self):
+        if self._rebuild_worker is not None:
+            self._rebuild_worker.deleteLater()
+            self._rebuild_worker = None
+        if self._rebuild_thread is not None:
+            self._rebuild_thread.deleteLater()
+            self._rebuild_thread = None
 
     def _open_in_maya(self, file_path):
         """Open Maya scene file (.ma/.mb) using Maya file command."""
