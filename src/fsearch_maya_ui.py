@@ -3,7 +3,6 @@
 import json
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -47,13 +46,6 @@ def _menu_exec(menu, pos):
     if hasattr(menu, "exec"):
         return menu.exec(pos)
     return menu.exec_(pos)
-
-
-def _app_exec(app):
-    """Qt5/Qt6-compatible application loop execution."""
-    if hasattr(app, "exec"):
-        return app.exec()
-    return app.exec_()
 
 
 def maya_main_window():
@@ -942,9 +934,3 @@ def show_file_searcher_ui():
     window.activateWindow()
     return window
 
-
-if __name__ == "__main__":
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
-    w = show_file_searcher_ui()
-    w.show()
-    sys.exit(_app_exec(app))
