@@ -242,8 +242,8 @@ class FileIndexRepository:
         safe_tokens = [f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens]
         return " AND ".join(safe_tokens)
 
-    def search(self, query: str, max_results: int) -> List[Dict]:
-        """Run hybrid search: FTS first, then LIKE fallback for coverage."""
+    def search(self, query: str, max_results: int, use_fts5: bool = True) -> List[Dict]:
+        """Run search with optional FTS5 priority and LIKE fallback."""
         tokens = self._tokens_from_text(query)
         if not tokens:
             return []
@@ -273,22 +273,23 @@ class FileIndexRepository:
         where_clause = " AND ".join(where_parts)
         with self._db_lock:
             cur = self._conn.cursor()
-            fts_match_query = self._build_fts_match_query(tokens)
-            try:
-                cur.execute(
-                    """
-                    SELECT f.path, f.filename, f.modified, f.size, f.is_dir, bm25(files_fts) AS rank
-                    FROM files_fts
-                    JOIN files AS f ON f.id = files_fts.rowid
-                    WHERE files_fts MATCH ?
-                    ORDER BY rank ASC, f.is_dir ASC, f.path ASC
-                    LIMIT ?;
-                    """,
-                    (fts_match_query, max_results),
-                )
-                _append_rows(cur.fetchall(), "fts")
-            except sqlite3.Error:
-                pass
+            if use_fts5:
+                fts_match_query = self._build_fts_match_query(tokens)
+                try:
+                    cur.execute(
+                        """
+                        SELECT f.path, f.filename, f.modified, f.size, f.is_dir, bm25(files_fts) AS rank
+                        FROM files_fts
+                        JOIN files AS f ON f.id = files_fts.rowid
+                        WHERE files_fts MATCH ?
+                        ORDER BY rank ASC, f.is_dir ASC, f.path ASC
+                        LIMIT ?;
+                        """,
+                        (fts_match_query, max_results),
+                    )
+                    _append_rows(cur.fetchall(), "fts")
+                except sqlite3.Error:
+                    pass
 
             if len(collected) < max_results:
                 cur.execute(

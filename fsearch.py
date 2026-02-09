@@ -87,7 +87,8 @@ class FileSearcher:
     def search(self, query: str, limit: Optional[int] = None) -> List[Dict]:
         """Run hybrid search query."""
         max_results = int(limit or self.config.get("max_results", 200))
-        return self._index.search(query=query, max_results=max_results)
+        use_fts5 = bool(self.config.get("use_fts5_search", True))
+        return self._index.search(query=query, max_results=max_results, use_fts5=use_fts5)
 
     def regex_search(self, pattern: str, limit: Optional[int] = None) -> List[Dict]:
         """Run regex search query."""

@@ -224,6 +224,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.auto_rebuild_on_launch_check = QtWidgets.QCheckBox("Auto-rebuilding on launch")
         self.regex_case_sensitive_check = QtWidgets.QCheckBox("Case Sensitive (Regex)")
         self.remember_last_search_check = QtWidgets.QCheckBox("Remember last search")
+        self.use_fts5_search_check = QtWidgets.QCheckBox("Use FTS5 Search")
         self.use_search_debounce_check = QtWidgets.QCheckBox("Use Search Debounce")
         self.search_debounce_ms_spin = QtWidgets.QSpinBox()
         self.search_debounce_ms_spin.setRange(0, 2000)
@@ -244,6 +245,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         form.addRow("", self.auto_rebuild_on_launch_check)
         form.addRow("", self.regex_case_sensitive_check)
         form.addRow("", self.remember_last_search_check)
+        form.addRow("", self.use_fts5_search_check)
         form.addRow("", self.use_search_debounce_check)
         form.addRow("", self.use_custom_font_check)
         layout.addLayout(form)
@@ -274,6 +276,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.rebuild_btn.clicked.connect(self._rebuild_index)
         self.delete_all_bookmarks_btn.clicked.connect(self._delete_all_bookmarks)
         self.remember_last_search_check.toggled.connect(self._on_remember_last_search_changed)
+        self.use_fts5_search_check.toggled.connect(self._on_fts5_settings_changed)
         self.use_search_debounce_check.toggled.connect(self._on_debounce_settings_changed)
         self.search_debounce_ms_spin.valueChanged.connect(self._on_debounce_settings_changed)
         self.use_custom_font_check.toggled.connect(self._on_font_settings_changed)
@@ -300,6 +303,7 @@ class FileSearcherUI(QtWidgets.QDialog):
             )
             self.regex_case_sensitive_check.setChecked(bool(cfg.get("regex_case_sensitive", False)))
             self.remember_last_search_check.setChecked(bool(cfg.get("remember_last_search", True)))
+            self.use_fts5_search_check.setChecked(bool(cfg.get("use_fts5_search", True)))
             self.use_search_debounce_check.setChecked(bool(cfg.get("use_search_debounce", True)))
             self.search_debounce_ms_spin.setValue(int(cfg.get("search_debounce_ms", 200)))
             self.search_debounce_ms_spin.setEnabled(self.use_search_debounce_check.isChecked())
@@ -364,12 +368,15 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._populate_tree(results)
         folders_count = sum(1 for row in results if bool(row.get("is_dir", 0)))
         files_count = len(results) - folders_count
-        fts_rows = sum(1 for row in results if str(row.get("search_source", "")) == "fts")
-        fts_percent = (fts_rows / len(results) * 100.0) if results else 0.0
         elapsed_ms = (time.perf_counter() - started_at) * 1000.0
-        self.search_status.setText(
-            f"Found: files {files_count}, folders {folders_count} | FTS5: {fts_percent:.1f}% ({fts_rows}/{len(results)}) | {elapsed_ms:.1f} ms"
-        )
+        if self.use_fts5_search_check.isChecked():
+            fts_rows = sum(1 for row in results if str(row.get("search_source", "")) == "fts")
+            fts_percent = (fts_rows / len(results) * 100.0) if results else 0.0
+            self.search_status.setText(
+                f"Found: files {files_count}, folders {folders_count} | FTS5: {fts_percent:.1f}% ({fts_rows}/{len(results)}) | {elapsed_ms:.1f} ms"
+            )
+        else:
+            self.search_status.setText(f"Found: files {files_count}, folders {folders_count} | {elapsed_ms:.1f} ms")
 
     def _populate_tree(self, results):
         """Render grouped search results into a folder/file tree."""
@@ -639,6 +646,7 @@ class FileSearcherUI(QtWidgets.QDialog):
             "auto_rebuild_on_launch": self.auto_rebuild_on_launch_check.isChecked(),
             "regex_case_sensitive": self.regex_case_sensitive_check.isChecked(),
             "remember_last_search": self.remember_last_search_check.isChecked(),
+            "use_fts5_search": self.use_fts5_search_check.isChecked(),
             "use_search_debounce": self.use_search_debounce_check.isChecked(),
             "search_debounce_ms": int(self.search_debounce_ms_spin.value()),
             "use_custom_font": self.use_custom_font_check.isChecked(),
@@ -670,6 +678,11 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._search_debounce_timer.setInterval(max(0, int(self.search_debounce_ms_spin.value())))
         if not self._is_loading_settings:
             self._save_settings(silent=True)
+
+    def _on_fts5_settings_changed(self, *_args):
+        if not self._is_loading_settings:
+            self._save_settings(silent=True)
+            self._schedule_search()
 
     def _on_font_settings_changed(self, *_args):
         """Apply font controls and persist them."""
