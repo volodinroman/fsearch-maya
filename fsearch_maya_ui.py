@@ -198,7 +198,19 @@ class FileSearcherUI(QtWidgets.QDialog):
 
     def _build_settings_tab(self):
         """Create settings controls for indexing, search, and UI preferences."""
-        layout = QtWidgets.QVBoxLayout(self.settings_tab)
+        outer_layout = QtWidgets.QVBoxLayout(self.settings_tab)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        outer_layout.addWidget(scroll)
+
+        content = QtWidgets.QWidget()
+        scroll.setWidget(content)
+
+        layout = QtWidgets.QVBoxLayout(content)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
@@ -207,6 +219,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         layout.addWidget(roots_caption)
 
         self.roots_list = QtWidgets.QListWidget()
+        self.roots_list.setMinimumHeight(120)
         layout.addWidget(self.roots_list, 1)
 
         roots_btn_row = QtWidgets.QHBoxLayout()
@@ -261,6 +274,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.settings_status = QtWidgets.QLabel("")
         self.settings_status.setObjectName("Caption")
         layout.addWidget(self.settings_status)
+        layout.addStretch(1)
 
     def _connect_signals(self):
         """Wire Qt signals to handlers."""
