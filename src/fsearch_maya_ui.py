@@ -170,9 +170,14 @@ class FileSearcherUI(QtWidgets.QDialog):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
+        search_row = QtWidgets.QHBoxLayout()
         self.search_edit = QtWidgets.QLineEdit()
         self.search_edit.setPlaceholderText("Search: car front")
-        layout.addWidget(self.search_edit)
+        self.search_btn = QtWidgets.QPushButton("Search")
+        self.search_btn.setVisible(False)
+        search_row.addWidget(self.search_edit, 1)
+        search_row.addWidget(self.search_btn, 0)
+        layout.addLayout(search_row)
 
         search_opts = QtWidgets.QHBoxLayout()
         self.regex_check = QtWidgets.QCheckBox("Regex")
@@ -264,6 +269,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.remember_last_search_check = QtWidgets.QCheckBox("Remember last search")
         self.use_fts5_search_check = QtWidgets.QCheckBox("Use FTS5 Search")
         self.use_search_debounce_check = QtWidgets.QCheckBox("Use Search Debounce")
+        self.use_live_search_check = QtWidgets.QCheckBox("Live Search")
         self.search_debounce_ms_spin = QtWidgets.QSpinBox()
         self.search_debounce_ms_spin.setRange(0, 2000)
         self.search_debounce_ms_spin.setSingleStep(25)
@@ -284,6 +290,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         form.addRow("", self.regex_case_sensitive_check)
         form.addRow("", self.remember_last_search_check)
         form.addRow("", self.use_fts5_search_check)
+        form.addRow("", self.use_live_search_check)
         form.addRow("", self.use_search_debounce_check)
         form.addRow("", self.use_custom_font_check)
         layout.addLayout(form)
@@ -304,6 +311,8 @@ class FileSearcherUI(QtWidgets.QDialog):
     def _connect_signals(self):
         """Wire Qt signals to handlers."""
         self.search_edit.textChanged.connect(self._schedule_search)
+        self.search_edit.returnPressed.connect(self._on_search_edit_return_pressed)
+        self.search_btn.clicked.connect(self._run_search)
         self.results_tree.customContextMenuRequested.connect(self._open_context_menu)
         self.results_tree.itemDoubleClicked.connect(self._on_item_double_click)
         self.bookmarks_tree.customContextMenuRequested.connect(self._open_bookmarks_context_menu)
@@ -316,6 +325,7 @@ class FileSearcherUI(QtWidgets.QDialog):
         self.delete_all_bookmarks_btn.clicked.connect(self._delete_all_bookmarks)
         self.remember_last_search_check.toggled.connect(self._on_remember_last_search_changed)
         self.use_fts5_search_check.toggled.connect(self._on_fts5_settings_changed)
+        self.use_live_search_check.toggled.connect(self._on_live_search_changed)
         self.use_search_debounce_check.toggled.connect(self._on_debounce_settings_changed)
         self.search_debounce_ms_spin.valueChanged.connect(self._on_debounce_settings_changed)
         self.use_custom_font_check.toggled.connect(self._on_font_settings_changed)
@@ -350,9 +360,11 @@ class FileSearcherUI(QtWidgets.QDialog):
             self.regex_case_sensitive_check.setChecked(bool(cfg.get("regex_case_sensitive", False)))
             self.remember_last_search_check.setChecked(bool(cfg.get("remember_last_search", True)))
             self.use_fts5_search_check.setChecked(bool(cfg.get("use_fts5_search", True)))
+            self.use_live_search_check.setChecked(bool(cfg.get("use_live_search", True)))
             self.use_search_debounce_check.setChecked(bool(cfg.get("use_search_debounce", True)))
             self.search_debounce_ms_spin.setValue(int(cfg.get("search_debounce_ms", 200)))
             self.search_debounce_ms_spin.setEnabled(self.use_search_debounce_check.isChecked())
+            self._apply_live_search_state()
             self._search_debounce_timer.setInterval(max(0, int(self.search_debounce_ms_spin.value())))
             self.use_custom_font_check.setChecked(bool(cfg.get("use_custom_font", True)))
             self.font_size_spin.setValue(int(cfg.get("font_size", 10)))
@@ -379,11 +391,20 @@ class FileSearcherUI(QtWidgets.QDialog):
 
     def _schedule_search(self):
         """Run search immediately or through debounce timer."""
+        if not self.use_live_search_check.isChecked():
+            self._search_debounce_timer.stop()
+            return
         if not self.use_search_debounce_check.isChecked():
             self._run_search()
             return
         self._search_debounce_timer.setInterval(max(0, int(self.search_debounce_ms_spin.value())))
         self._search_debounce_timer.start()
+
+    def _on_search_edit_return_pressed(self):
+        """Run search on Enter only when live search is disabled."""
+        if self.use_live_search_check.isChecked():
+            return
+        self._run_search()
 
     def _run_search(self):
         """Execute search and update results tree and metrics."""
@@ -697,6 +718,7 @@ class FileSearcherUI(QtWidgets.QDialog):
             "regex_case_sensitive": self.regex_case_sensitive_check.isChecked(),
             "remember_last_search": self.remember_last_search_check.isChecked(),
             "use_fts5_search": self.use_fts5_search_check.isChecked(),
+            "use_live_search": self.use_live_search_check.isChecked(),
             "use_search_debounce": self.use_search_debounce_check.isChecked(),
             "search_debounce_ms": int(self.search_debounce_ms_spin.value()),
             "use_custom_font": self.use_custom_font_check.isChecked(),
@@ -724,10 +746,29 @@ class FileSearcherUI(QtWidgets.QDialog):
 
     def _on_debounce_settings_changed(self, *_args):
         """Apply debounce controls and persist them."""
-        self.search_debounce_ms_spin.setEnabled(self.use_search_debounce_check.isChecked())
+        self.search_debounce_ms_spin.setEnabled(
+            self.use_live_search_check.isChecked() and self.use_search_debounce_check.isChecked()
+        )
         self._search_debounce_timer.setInterval(max(0, int(self.search_debounce_ms_spin.value())))
         if not self._is_loading_settings:
             self._save_settings(silent=True)
+
+    def _apply_live_search_state(self):
+        """Toggle manual Search button depending on live search mode."""
+        live_enabled = self.use_live_search_check.isChecked()
+        self.search_btn.setVisible(not live_enabled)
+        self.use_search_debounce_check.setEnabled(live_enabled)
+        self.search_debounce_ms_spin.setEnabled(live_enabled and self.use_search_debounce_check.isChecked())
+        if not live_enabled:
+            self._search_debounce_timer.stop()
+
+    def _on_live_search_changed(self, *_args):
+        """Apply live/manual search mode and persist setting."""
+        self._apply_live_search_state()
+        if not self._is_loading_settings:
+            self._save_settings(silent=True)
+            if self.use_live_search_check.isChecked():
+                self._schedule_search()
 
     def _on_general_settings_changed(self, *_args):
         """Persist basic settings controls that should update immediately."""

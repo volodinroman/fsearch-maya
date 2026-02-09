@@ -16,6 +16,7 @@ DEFAULT_CONFIG: Dict = {
     "window_size": {"width": 1400, "height": 800},
     "use_search_debounce": True,
     "search_debounce_ms": 200,
+    "use_live_search": True,
     "use_fts5_search": True,
     "regex_case_sensitive": False,
     "include_folders": False,

@@ -22,6 +22,9 @@ This tool is optimized for daily work with deep folders and many scene files:
 - Hybrid search pipeline:
   - `FTS5` first (when enabled)
   - `LIKE` fallback for partial/incomplete input coverage
+- Two search interaction modes:
+  - `Live Search` (default): search while typing
+  - Manual mode: result updates only on `Search` button or `Enter`
 - Optional regex mode
 - Optional search debounce with configurable milliseconds
 - Result list grouped by folder
@@ -57,6 +60,7 @@ This tool is optimized for daily work with deep folders and many scene files:
 - Auto-rebuilding on launch
 - Regex case-sensitive option
 - Remember last search
+- Live Search toggle (live/manual mode)
 - Enable/disable FTS5 search
 - Enable/disable debounce + debounce ms
 - Enable/disable custom font + font size
@@ -72,7 +76,7 @@ This tool is optimized for daily work with deep folders and many scene files:
 Settings are stored in:
 - `src/.data/config.json`
 
-This includes roots, search behavior, bookmarks, window size, font options, FTS toggle, debounce options, and other UI preferences.
+This includes roots, search behavior (including Live Search mode), bookmarks, window size, font options, FTS toggle, debounce options, and other UI preferences.
 
 ## Project Structure
 
@@ -138,4 +142,5 @@ fsearch_maya_ui.show_file_searcher_ui()
 
 - "Open in Maya" is intentionally available only for `.ma/.mb` files.
 - If FTS5 is disabled in settings, search uses LIKE-only mode.
+- If Live Search is disabled, use the `Search` button or press `Enter` in the query field.
 - Indexing behavior depends on selected roots and extension filters.
