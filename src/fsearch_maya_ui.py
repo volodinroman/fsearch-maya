@@ -340,6 +340,8 @@ class FileSearcherUI(QtWidgets.QDialog):
         if QShortcutClass is not None:
             self.delete_bookmarks_shortcut = QShortcutClass(QtGui.QKeySequence.Delete, self.bookmarks_tree)
             self.delete_bookmarks_shortcut.activated.connect(self._remove_selected_bookmarks)
+            self.delete_roots_shortcut = QShortcutClass(QtGui.QKeySequence.Delete, self.roots_list)
+            self.delete_roots_shortcut.activated.connect(self._remove_selected_roots)
 
     def _load_settings(self):
         """Load settings from config and apply them to widgets."""
