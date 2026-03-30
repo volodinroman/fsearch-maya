@@ -6,7 +6,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 
 class FileIndexRepository:
@@ -232,9 +232,21 @@ class FileIndexRepository:
                     )
 
     @staticmethod
-    def _tokens_from_text(text: str) -> List[str]:
-        """Split search text into lower-cased space-separated tokens."""
-        return [token.strip().lower() for token in text.split() if token.strip()]
+    def _parse_query_tokens(text: str) -> Tuple[List[str], List[str]]:
+        """Split query into include/exclude lower-cased space-separated tokens."""
+        include_tokens: List[str] = []
+        exclude_tokens: List[str] = []
+        for raw_token in str(text).split():
+            token = raw_token.strip().lower()
+            if not token:
+                continue
+            if token.startswith("!"):
+                excluded = token.lstrip("!")
+                if excluded:
+                    exclude_tokens.append(excluded)
+                continue
+            include_tokens.append(token)
+        return include_tokens, exclude_tokens
 
     @staticmethod
     def _build_fts_match_query(tokens: List[str]) -> str:
@@ -244,8 +256,8 @@ class FileIndexRepository:
 
     def search(self, query: str, max_results: int, use_fts5: bool = True) -> List[Dict]:
         """Run search with optional FTS5 priority and LIKE fallback."""
-        tokens = self._tokens_from_text(query)
-        if not tokens:
+        include_tokens, exclude_tokens = self._parse_query_tokens(query)
+        if not include_tokens and not exclude_tokens:
             return []
 
         collected: List[Dict] = []
@@ -255,7 +267,10 @@ class FileIndexRepository:
             for row in rows:
                 row_dict = dict(row)
                 row_path = str(row_dict.get("path", "")).lower()
+                row_filename = str(row_dict.get("filename", "")).lower()
                 if not row_path or row_path in seen_paths:
+                    continue
+                if exclude_tokens and any(token in row_path or token in row_filename for token in exclude_tokens):
                     continue
                 row_dict["search_source"] = source
                 seen_paths.add(row_path)
@@ -265,16 +280,21 @@ class FileIndexRepository:
 
         where_parts = []
         params = []
-        for token in tokens:
+        for token in include_tokens:
             where_parts.append("(path_lower LIKE ? OR lower(filename) LIKE ?)")
             like_value = f"%{token}%"
             params.extend([like_value, like_value])
 
-        where_clause = " AND ".join(where_parts)
+        for token in exclude_tokens:
+            where_parts.append("(path_lower NOT LIKE ? AND lower(filename) NOT LIKE ?)")
+            like_value = f"%{token}%"
+            params.extend([like_value, like_value])
+
+        where_clause = " AND ".join(where_parts) if where_parts else "1=1"
         with self._db_lock:
             cur = self._conn.cursor()
-            if use_fts5:
-                fts_match_query = self._build_fts_match_query(tokens)
+            if use_fts5 and include_tokens:
+                fts_match_query = self._build_fts_match_query(include_tokens)
                 try:
                     cur.execute(
                         """

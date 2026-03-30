@@ -172,7 +172,7 @@ class FileSearcherUI(QtWidgets.QDialog):
 
         search_row = QtWidgets.QHBoxLayout()
         self.search_edit = QtWidgets.QLineEdit()
-        self.search_edit.setPlaceholderText("Search: car front")
+        self.search_edit.setPlaceholderText("Search: car front !proxy")
         self.search_btn = QtWidgets.QPushButton("Search")
         self.search_btn.setVisible(False)
         search_row.addWidget(self.search_edit, 1)
@@ -482,11 +482,11 @@ class FileSearcherUI(QtWidgets.QDialog):
                 folder_item.setExpanded(True)
 
     def _tokens_from_query(self, text):
-        """Tokenize user search query by spaces."""
+        """Tokenize include-terms from query for result highlighting."""
         tokens = []
         for token in str(text).split():
             token = token.strip().lower()
-            if token:
+            if token and not token.startswith("!"):
                 tokens.append(token)
         return tokens
 

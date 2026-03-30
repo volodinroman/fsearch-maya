@@ -13,6 +13,7 @@ Maya's default **Open** dialog is fine for browsing, but it gets slow and awkwar
 This tool is optimized for daily work with deep folders and many scene files:
 - Indexed search across one or multiple roots
 - Partial and token-based matching
+- Exclude tokens with `!word`
 - Bookmarks for frequently used files/folders
 - Fast reopen and reveal actions from a single UI
 
@@ -26,6 +27,7 @@ This tool is optimized for daily work with deep folders and many scene files:
   - `Live Search` (default): search while typing
   - Manual mode: result updates only on `Search` button or `Enter`
 - Optional regex mode
+- Exclude terms in normal search with syntax like `car !proxy !backup`
 - Optional search debounce with configurable milliseconds
 - Result list grouped by folder
 - Double-click opens Maya scene files (`.ma`, `.mb`)
@@ -142,5 +144,6 @@ fsearch_maya_ui.show_file_searcher_ui()
 
 - "Open in Maya" is intentionally available only for `.ma/.mb` files.
 - If FTS5 is disabled in settings, search uses LIKE-only mode.
+- In normal search mode, prefix a token with `!` to exclude it, for example `shot010 !proxy`.
 - If Live Search is disabled, use the `Search` button or press `Enter` in the query field.
 - Indexing behavior depends on selected roots and extension filters.
