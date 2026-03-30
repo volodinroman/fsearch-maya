@@ -586,6 +586,20 @@ class FileSearcherUI(QtWidgets.QDialog):
         self._populate_bookmarks()
         self._persist_bookmarks()
 
+    def _copy_path_to_search(self, path):
+        """Send a path into Search tab and run search immediately."""
+        normalized_path = str(path or "").replace("\\", "/").strip()
+        if not normalized_path:
+            return
+        self._search_debounce_timer.stop()
+        blocker = QtCore.QSignalBlocker(self.search_edit)
+        self.search_edit.setText(normalized_path)
+        del blocker
+        self.tabs.setCurrentWidget(self.search_tab)
+        self.search_edit.setFocus()
+        self.search_edit.selectAll()
+        self._run_search()
+
     def _open_context_menu(self, pos):
         """Open context menu for search results tree items."""
         item = self.results_tree.itemAt(pos)
@@ -659,6 +673,7 @@ class FileSearcherUI(QtWidgets.QDialog):
             item_path = None
         if single_item is not None and item_type == ITEM_FILE and self._is_maya_file(item_path):
             open_maya_action = menu.addAction("Open in Maya")
+        copy_to_search_action = menu.addAction("Copy to search") if single_item is not None else None
         remove_action = menu.addAction("Remove Bookmark")
 
         chosen = _menu_exec(menu, self.bookmarks_tree.viewport().mapToGlobal(pos))
@@ -672,6 +687,8 @@ class FileSearcherUI(QtWidgets.QDialog):
                     self._open_folder(selected_path)
         elif open_maya_action is not None and chosen == open_maya_action:
             self._open_in_maya(item_path)
+        elif copy_to_search_action is not None and chosen == copy_to_search_action:
+            self._copy_path_to_search(item_path)
         elif chosen == remove_action:
             self._remove_selected_bookmarks()
 
